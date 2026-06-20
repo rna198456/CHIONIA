@@ -1,0 +1,52 @@
+name: Deploy Chion Bot to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # permite ejecución manual desde la UI de GitHub
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Solo una ejecución a la vez; cancela la anterior si hay un nuevo push
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Build de producción
+        run: npm run build
+        # Vite genera la carpeta /dist lista para servir
+
+      - name: Configurar GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Subir artefacto de build
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
+
+      - name: Desplegar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
