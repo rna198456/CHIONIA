@@ -1,21 +1,28 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import ModelLoader from "./components/ModelLoader";
 import ChatInterface from "./components/ChatInterface";
 
 /**
- * App gestiona una sola pieza de estado: el engine de WebLLM.
- * - engine === null  → pantalla de carga del modelo (ModelLoader)
- * - engine !== null  → interfaz de chat (ChatInterface)
+ * PROBLEMA RESUELTO:
+ * pipeline() de Transformers.js retorna una instancia de `Callable extends Function`.
+ * typeof pipeline_instance === "function" → true.
+ * React detecta eso y llama pipeline(estadoAnterior) como si fuera un setter.
+ * Eso dispara "Input must be a string..." y deja el estado en undefined.
  *
- * El engine se crea una sola vez y se pasa como prop a ChatInterface.
- * No se recrea entre conversaciones (solo se reinicia el historial).
+ * SOLUCIÓN:
+ * Usar useRef() para guardar el pipeline — los refs nunca interpretan funciones
+ * como actualizadores. Un useState booleano controla el re-render.
  */
 export default function App() {
-  const [engine, setEngine] = useState(null);
+  const engineRef = useRef(null);          // ← ref, no state
+  const [ready, setReady] = useState(false);
 
-  return engine ? (
-    <ChatInterface engine={engine} />
-  ) : (
-    <ModelLoader onReady={setEngine} />
-  );
+  const handleReady = (pipe) => {
+    engineRef.current = pipe;              // guarda el pipeline sin que React lo llame
+    setReady(true);                        // dispara el re-render
+  };
+
+  return ready
+    ? <ChatInterface engine={engineRef.current} />
+    : <ModelLoader onReady={handleReady} />;
 }

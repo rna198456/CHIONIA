@@ -26,7 +26,6 @@ function AudioBars() {
 }
 
 export default function ChatInterface({ engine }) {
-  // "engine" es el objeto pipeline de Transformers.js
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -34,6 +33,7 @@ export default function ChatInterface({ engine }) {
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(false);
+  const fullResponseRef = useRef(""); // acumula tokens fuera del closure
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -50,59 +50,65 @@ export default function ChatInterface({ engine }) {
     if (textareaRef.current) textareaRef.current.style.height = "46px";
     setGenerating(true);
     abortRef.current = false;
+    fullResponseRef.current = "";
 
-    // Placeholder del asistente (se rellena token a token)
+    // Agrega placeholder del asistente
     setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      // Últimos 8 mensajes para no agotar el contexto del modelo pequeño
+      // Limitar historial a últimos 8 mensajes para no agotar el contexto
       const history = updated.slice(-8).map(({ role, content }) => ({ role, content }));
       const apiMessages = [
         { role: "system", content: SYSTEM_PROMPT },
         ...history,
       ];
 
-      let fullResponse = "";
-
-      // TextStreamer: llama callback_function con cada token decodificado
+      // ── TextStreamer ──────────────────────────────────────────────────────
+      // engine.tokenizer: el tokenizer del pipeline de Transformers.js
+      // skip_prompt: true → solo tokens nuevos, no el prompt
+      // decode_kwargs.skip_special_tokens: elimina tokens <|endoftext|> etc.
       const streamer = new TextStreamer(engine.tokenizer, {
         skip_prompt: true,
-        skip_special_tokens: true,
+        decode_kwargs: { skip_special_tokens: true },
         callback_function: (token) => {
           if (abortRef.current) return;
-          fullResponse += token;
+          fullResponseRef.current += token;
+          // Actualiza el último mensaje en tiempo real
           setMessages((prev) => {
             const next = [...prev];
-            next[next.length - 1] = { role: "assistant", content: fullResponse };
+            next[next.length - 1] = {
+              role: "assistant",
+              content: fullResponseRef.current,
+            };
             return next;
           });
         },
       });
 
-      // Inferencia — bloquea hasta que termina (streaming va por callback)
+      // ── Inferencia ────────────────────────────────────────────────────────
       await engine(apiMessages, {
-        max_new_tokens: GENERATION_CONFIG.max_new_tokens,
-        temperature: GENERATION_CONFIG.temperature,
-        top_p: GENERATION_CONFIG.top_p,
-        do_sample: GENERATION_CONFIG.do_sample,
-        repetition_penalty: GENERATION_CONFIG.repetition_penalty,
+        max_new_tokens:      GENERATION_CONFIG.max_new_tokens,
+        temperature:         GENERATION_CONFIG.temperature,
+        top_p:               GENERATION_CONFIG.top_p,
+        do_sample:           GENERATION_CONFIG.do_sample,
+        repetition_penalty:  GENERATION_CONFIG.repetition_penalty,
         streamer,
-        return_full_text: false, // solo el texto generado, no el prompt
+        return_full_text: false,
       });
 
-      if (fullResponse && !abortRef.current) {
-        logInteraction(txt, fullResponse);
+      if (fullResponseRef.current && !abortRef.current) {
+        logInteraction(txt, fullResponseRef.current);
       }
 
     } catch (err) {
       if (!abortRef.current) {
         console.error("[Inference]", err);
+        const errorMsg = err?.message?.includes("aborted")
+          ? "Generación cancelada."
+          : "Error al generar la respuesta. Intentá de nuevo.";
         setMessages((prev) => {
           const next = [...prev];
-          next[next.length - 1] = {
-            role: "assistant",
-            content: "Ocurrió un error al generar la respuesta. Por favor, intentá de nuevo.",
-          };
+          next[next.length - 1] = { role: "assistant", content: errorMsg };
           return next;
         });
       }
@@ -116,6 +122,7 @@ export default function ChatInterface({ engine }) {
     setMessages([WELCOME_MESSAGE]);
     setInput("");
     setGenerating(false);
+    fullResponseRef.current = "";
     if (textareaRef.current) textareaRef.current.style.height = "46px";
   };
 
@@ -134,6 +141,7 @@ export default function ChatInterface({ engine }) {
       display: "flex", flexDirection: "column",
       fontFamily: "'Inter','Helvetica Neue',system-ui,sans-serif",
     }}>
+
       {/* ── Header ── */}
       <header style={{
         background: C.surface, borderBottom: `1px solid ${C.border}`,
@@ -149,7 +157,10 @@ export default function ChatInterface({ engine }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade8080" }} />
+            <span style={{
+              width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
+              display: "inline-block", boxShadow: "0 0 6px #4ade8080",
+            }} />
             <span style={{ fontSize: 11, color: C.muted }}>Local</span>
           </div>
           <button onClick={() => setShowPanel(true)} style={{
@@ -185,7 +196,6 @@ export default function ChatInterface({ engine }) {
                 background: m.role === "user" ? C.amberDeep : C.card,
                 color: m.role === "user" ? C.amberText : C.text,
                 border: m.role === "assistant" ? `1px solid ${C.border}` : "none",
-                // Cursor derecho parpadeante mientras genera el último mensaje
                 ...(generating && i === messages.length - 1 && m.role === "assistant" && m.content
                   ? { borderRight: `2px solid ${C.amber}` } : {}),
               }}>
@@ -196,20 +206,21 @@ export default function ChatInterface({ engine }) {
             </div>
           ))}
 
-          {/* Sugerencias */}
           {showSuggestions && (
             <div style={{ marginTop: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <div style={{ flex: 1, height: 1, background: C.border }} />
-                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>Preguntas sugeridas</span>
+                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
+                  Preguntas sugeridas
+                </span>
                 <div style={{ flex: 1, height: 1, background: C.border }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {SUGGESTIONS.map((s, i) => (
                   <button key={i} onClick={() => send(s)} style={{
-                    textAlign: "left", fontSize: 12,
-                    background: C.surface, border: `1px solid ${C.border}`,
-                    borderRadius: 10, padding: "9px 12px", color: C.textDim,
+                    textAlign: "left", fontSize: 12, background: C.surface,
+                    border: `1px solid ${C.border}`, borderRadius: 10,
+                    padding: "9px 12px", color: C.textDim,
                     cursor: "pointer", lineHeight: 1.5, fontFamily: "inherit",
                   }}
                   onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.color = C.text; }}
@@ -235,10 +246,12 @@ export default function ChatInterface({ engine }) {
               ref={textareaRef}
               value={input}
               onChange={handleChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-              }}
-              placeholder={generating ? "Generando respuesta… (puede tardar hasta 1 min en CPU)" : "Preguntale a Michel Chion…"}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder={
+                generating
+                  ? "Generando respuesta… (puede tardar hasta 1 min en CPU)"
+                  : "Preguntale a Michel Chion…"
+              }
               rows={1}
               style={{
                 flex: 1, background: C.card, border: `1px solid ${C.border}`,
