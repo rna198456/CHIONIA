@@ -6,8 +6,15 @@ export default defineConfig({
   base: "./",
 
   optimizeDeps: {
-    // Transformers.js usa workers y WASM — Vite NO debe pre-bundlearlo
     exclude: ["@huggingface/transformers"],
+  },
+
+  worker: {
+    format: "es",          // workers en formato ES module
+  },
+
+  build: {
+    target: "esnext",      // soporte completo de async/await y BigInt
   },
 
   server: {
