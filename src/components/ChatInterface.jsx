@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { TextStreamer } from "@huggingface/transformers";
 import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
 import { SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS, WELCOME_MESSAGE } from "../data/chionPrompt";
@@ -13,28 +14,26 @@ const C = {
 function AudioBars() {
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 20 }}>
-      {[0, 1, 2, 3, 4].map((i) => (
-        <span
-          key={i}
-          style={{
-            width: 3, borderRadius: 2, background: C.amber,
-            animation: `bar${i + 1} 1.1s ease-in-out infinite`,
-            animationDelay: `${i * 110}ms`,
-          }}
-        />
+      {[0,1,2,3,4].map((i) => (
+        <span key={i} style={{
+          width: 3, borderRadius: 2, background: C.amber,
+          animation: `bar${i+1} 1.1s ease-in-out infinite`,
+          animationDelay: `${i * 110}ms`,
+        }} />
       ))}
     </div>
   );
 }
 
 export default function ChatInterface({ engine }) {
+  // "engine" es el objeto pipeline de Transformers.js
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
-  const abortRef = useRef(false); // para cancelar generación si el usuario reinicia
+  const abortRef = useRef(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -44,7 +43,6 @@ export default function ChatInterface({ engine }) {
     const txt = (override ?? input).trim();
     if (!txt || generating) return;
 
-    // Agregamos el mensaje del usuario
     const userMsg = { role: "user", content: txt };
     const updated = [...messages, userMsg];
     setMessages(updated);
@@ -54,51 +52,56 @@ export default function ChatInterface({ engine }) {
     abortRef.current = false;
 
     // Placeholder del asistente (se rellena token a token)
-    const assistantPlaceholder = { role: "assistant", content: "" };
-    setMessages((prev) => [...prev, assistantPlaceholder]);
+    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      // Construimos el historial para la API de WebLLM
-      // Limitamos a los últimos 8 turnos para no agotar el contexto del modelo pequeño
+      // Últimos 8 mensajes para no agotar el contexto del modelo pequeño
       const history = updated.slice(-8).map(({ role, content }) => ({ role, content }));
       const apiMessages = [
         { role: "system", content: SYSTEM_PROMPT },
         ...history,
       ];
 
-      const stream = await engine.chat.completions.create({
-        messages: apiMessages,
-        ...GENERATION_CONFIG,
-        stream: true,
-      });
-
       let fullResponse = "";
 
-      for await (const chunk of stream) {
-        if (abortRef.current) break;
-        const delta = chunk.choices[0]?.delta?.content || "";
-        if (delta) {
-          fullResponse += delta;
-          // Actualiza el último mensaje (el placeholder) en tiempo real
+      // TextStreamer: llama callback_function con cada token decodificado
+      const streamer = new TextStreamer(engine.tokenizer, {
+        skip_prompt: true,
+        skip_special_tokens: true,
+        callback_function: (token) => {
+          if (abortRef.current) return;
+          fullResponse += token;
           setMessages((prev) => {
             const next = [...prev];
             next[next.length - 1] = { role: "assistant", content: fullResponse };
             return next;
           });
-        }
-      }
+        },
+      });
 
-      // Registra la interacción completa
-      if (fullResponse) logInteraction(txt, fullResponse);
+      // Inferencia — bloquea hasta que termina (streaming va por callback)
+      await engine(apiMessages, {
+        max_new_tokens: GENERATION_CONFIG.max_new_tokens,
+        temperature: GENERATION_CONFIG.temperature,
+        top_p: GENERATION_CONFIG.top_p,
+        do_sample: GENERATION_CONFIG.do_sample,
+        repetition_penalty: GENERATION_CONFIG.repetition_penalty,
+        streamer,
+        return_full_text: false, // solo el texto generado, no el prompt
+      });
+
+      if (fullResponse && !abortRef.current) {
+        logInteraction(txt, fullResponse);
+      }
 
     } catch (err) {
       if (!abortRef.current) {
-        console.error("[WebLLM inference]", err);
+        console.error("[Inference]", err);
         setMessages((prev) => {
           const next = [...prev];
           next[next.length - 1] = {
             role: "assistant",
-            content: "Ocurrió un error al generar la respuesta. Por favor, intentá nuevamente.",
+            content: "Ocurrió un error al generar la respuesta. Por favor, intentá de nuevo.",
           };
           return next;
         });
@@ -126,187 +129,106 @@ export default function ChatInterface({ engine }) {
   const showSuggestions = messages.length === 1 && !generating;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh", background: C.bg, color: C.text,
-        display: "flex", flexDirection: "column",
-        fontFamily: "'Inter','Helvetica Neue',system-ui,sans-serif",
-      }}
-    >
+    <div style={{
+      minHeight: "100vh", background: C.bg, color: C.text,
+      display: "flex", flexDirection: "column",
+      fontFamily: "'Inter','Helvetica Neue',system-ui,sans-serif",
+    }}>
       {/* ── Header ── */}
-      <header
-        style={{
-          background: C.surface, borderBottom: `1px solid ${C.border}`,
-          padding: "13px 18px", display: "flex", alignItems: "center",
-          gap: 12, position: "sticky", top: 0, zIndex: 10,
-        }}
-      >
+      <header style={{
+        background: C.surface, borderBottom: `1px solid ${C.border}`,
+        padding: "13px 18px", display: "flex", alignItems: "center",
+        gap: 12, position: "sticky", top: 0, zIndex: 10,
+      }}>
         <Avatar size={46} />
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 15, color: "#f0ece0", letterSpacing: "0.01em" }}>
-            Michel Chion
-          </div>
+          <div style={{ fontWeight: 600, fontSize: 15, color: "#f0ece0" }}>Michel Chion</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-            Teórico · Compositor · «La Audiovisión» (Paidós, 1993) · Modelo local
+            Teórico · «La Audiovisión» · IA local — sin servidor
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span
-              style={{
-                width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
-                display: "inline-block", boxShadow: "0 0 6px #4ade8080",
-              }}
-            />
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade8080" }} />
             <span style={{ fontSize: 11, color: C.muted }}>Local</span>
           </div>
-          <button
-            onClick={() => setShowPanel(true)}
-            style={{
-              fontSize: 11, color: C.amber, background: "#1c1008",
-              border: `1px solid ${C.amberDeep}`, borderRadius: 8,
-              padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
-            }}
-          >
-            📊 Registro
-          </button>
-          <button
-            onClick={reset}
-            style={{
-              fontSize: 11, color: C.muted, background: C.card,
-              border: `1px solid ${C.border}`, borderRadius: 8,
-              padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
-            }}
-          >
-            Reiniciar
-          </button>
+          <button onClick={() => setShowPanel(true)} style={{
+            fontSize: 11, color: C.amber, background: "#1c1008",
+            border: `1px solid ${C.amberDeep}`, borderRadius: 8,
+            padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
+          }}>📊 Registro</button>
+          <button onClick={reset} style={{
+            fontSize: 11, color: C.muted, background: C.card,
+            border: `1px solid ${C.border}`, borderRadius: 8,
+            padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
+          }}>Reiniciar</button>
         </div>
       </header>
 
-      {/* ── Panel docente ── */}
       {showPanel && <LogPanel onClose={() => setShowPanel(false)} />}
 
       {/* ── Mensajes ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "22px 14px 8px" }}>
-        <div
-          style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}
-        >
-          {/* Referencia bibliográfica */}
-          <div
-            style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "8px 14px",
-              background: C.card, borderRadius: 10, border: `1px solid ${C.border}`,
-              marginBottom: 4,
-            }}
-          >
-            <span style={{ fontSize: 16 }}>📖</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 11, color: C.amber, fontWeight: 600, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-                Basado en el texto original
-              </div>
-              <div style={{ fontSize: 12, color: C.textDim, marginTop: 1 }}>
-                L'Audio-vision (Nathan, 1990) · Ed. española: La Audiovisión (Paidós, 1993) · IA local sin servidor
-              </div>
-            </div>
-          </div>
+        <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Burbujas de mensajes */}
           {messages.map((m, i) => (
-            <div
-              key={i}
-              style={{
-                display: "flex",
-                justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-                alignItems: "flex-start",
-                gap: 10,
-              }}
-            >
+            <div key={i} style={{
+              display: "flex",
+              justifyContent: m.role === "user" ? "flex-end" : "flex-start",
+              alignItems: "flex-start", gap: 10,
+            }}>
               {m.role === "assistant" && <Avatar size={30} />}
-              <div
-                style={{
-                  maxWidth: "78%", padding: "11px 15px",
-                  borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "4px 16px 16px 16px",
-                  fontSize: 14, lineHeight: 1.75, whiteSpace: "pre-wrap",
-                  background: m.role === "user" ? C.amberDeep : C.card,
-                  color: m.role === "user" ? C.amberText : C.text,
-                  border: m.role === "assistant" ? `1px solid ${C.border}` : "none",
-                  // Cursor parpadeante durante la generación en el último mensaje
-                  ...(generating && i === messages.length - 1 && m.role === "assistant"
-                    ? { borderRight: `2px solid ${C.amber}` }
-                    : {}),
-                }}
-              >
-                {m.content || <AudioBars />}
+              <div style={{
+                maxWidth: "78%", padding: "11px 15px",
+                borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "4px 16px 16px 16px",
+                fontSize: 14, lineHeight: 1.75, whiteSpace: "pre-wrap",
+                background: m.role === "user" ? C.amberDeep : C.card,
+                color: m.role === "user" ? C.amberText : C.text,
+                border: m.role === "assistant" ? `1px solid ${C.border}` : "none",
+                // Cursor derecho parpadeante mientras genera el último mensaje
+                ...(generating && i === messages.length - 1 && m.role === "assistant" && m.content
+                  ? { borderRight: `2px solid ${C.amber}` } : {}),
+              }}>
+                {m.content === "" && generating && i === messages.length - 1
+                  ? <AudioBars />
+                  : m.content}
               </div>
             </div>
           ))}
-
-          {/* Indicador de generación inicial (antes del primer token) */}
-          {generating && messages[messages.length - 1]?.content === "" && (
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-              <Avatar size={30} />
-              <div
-                style={{
-                  background: C.card, border: `1px solid ${C.border}`,
-                  borderRadius: "4px 16px 16px 16px", padding: "14px 16px",
-                }}
-              >
-                <AudioBars />
-              </div>
-            </div>
-          )}
 
           {/* Sugerencias */}
           {showSuggestions && (
             <div style={{ marginTop: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
                 <div style={{ flex: 1, height: 1, background: C.border }} />
-                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>
-                  Preguntas sugeridas
-                </span>
+                <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: "0.1em" }}>Preguntas sugeridas</span>
                 <div style={{ flex: 1, height: 1, background: C.border }} />
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                 {SUGGESTIONS.map((s, i) => (
-                  <button
-                    key={i}
-                    onClick={() => send(s)}
-                    style={{
-                      textAlign: "left", fontSize: 12,
-                      background: C.surface, border: `1px solid ${C.border}`,
-                      borderRadius: 10, padding: "9px 12px", color: C.textDim,
-                      cursor: "pointer", lineHeight: 1.5, fontFamily: "inherit",
-                      transition: "all 0.15s",
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = C.card;
-                      e.currentTarget.style.color = C.text;
-                      e.currentTarget.style.borderColor = C.amber;
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = C.surface;
-                      e.currentTarget.style.color = C.textDim;
-                      e.currentTarget.style.borderColor = C.border;
-                    }}
-                  >
+                  <button key={i} onClick={() => send(s)} style={{
+                    textAlign: "left", fontSize: 12,
+                    background: C.surface, border: `1px solid ${C.border}`,
+                    borderRadius: 10, padding: "9px 12px", color: C.textDim,
+                    cursor: "pointer", lineHeight: 1.5, fontFamily: "inherit",
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.color = C.text; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}>
                     {s}
                   </button>
                 ))}
               </div>
             </div>
           )}
-
           <div ref={bottomRef} />
         </div>
       </div>
 
       {/* ── Input ── */}
-      <div
-        style={{
-          background: C.surface, borderTop: `1px solid ${C.border}`,
-          padding: "13px 14px 15px", position: "sticky", bottom: 0,
-        }}
-      >
+      <div style={{
+        background: C.surface, borderTop: `1px solid ${C.border}`,
+        padding: "13px 14px 15px", position: "sticky", bottom: 0,
+      }}>
         <div style={{ maxWidth: 680, margin: "0 auto" }}>
           <div style={{ display: "flex", gap: 9, alignItems: "flex-end" }}>
             <textarea
@@ -314,12 +236,9 @@ export default function ChatInterface({ engine }) {
               value={input}
               onChange={handleChange}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
               }}
-              placeholder="Preguntale a Michel Chion sobre su obra y conceptos…"
+              placeholder={generating ? "Generando respuesta… (puede tardar hasta 1 min en CPU)" : "Preguntale a Michel Chion…"}
               rows={1}
               style={{
                 flex: 1, background: C.card, border: `1px solid ${C.border}`,
@@ -345,8 +264,7 @@ export default function ChatInterface({ engine }) {
             </button>
           </div>
           <div style={{ textAlign: "center", fontSize: 10, color: "#3a3a3a", marginTop: 8 }}>
-            Simulación académica · Basada en «La Audiovisión» (Paidós, 1993) ·
-            Las consultas quedan registradas localmente con fines pedagógicos
+            Simulación académica · «La Audiovisión» (Paidós, 1993) · Consultas registradas localmente
           </div>
         </div>
       </div>
@@ -358,7 +276,7 @@ export default function ChatInterface({ engine }) {
         @keyframes bar4 { 0%,100%{height:18px} 50%{height:8px}  }
         @keyframes bar5 { 0%,100%{height:9px}  50%{height:16px} }
         textarea::placeholder { color: #444; }
-        textarea:focus { border-color: #c47c30 !important; box-shadow: 0 0 0 1px #c47c3040; }
+        textarea:focus { border-color: #c47c30 !important; }
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-track { background: #0e0e0e; }
         ::-webkit-scrollbar-thumb { background: #2d2d2d; border-radius: 3px; }

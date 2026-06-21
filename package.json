@@ -1,7 +1,7 @@
 {
   "name": "chion-bot",
-  "version": "1.0.0",
-  "description": "Chatbot académico Michel Chion – WebLLM local, costo $0",
+  "version": "2.0.0",
+  "description": "Chatbot Michel Chion – Transformers.js local, WebGPU + WASM fallback, $0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@mlc-ai/web-llm": "^0.2.73",
+    "@huggingface/transformers": "^3.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
