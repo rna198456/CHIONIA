@@ -1,7 +1,18 @@
 import { useState, useEffect } from "react";
-import { pipeline } from "@huggingface/transformers";
+import { pipeline, env } from "@huggingface/transformers";
 import { MODELS } from "../data/chionPrompt";
 import Avatar from "./Avatar";
+
+// ── FIXES CRÍTICOS ────────────────────────────────────────────────────────────
+// 1. numThreads = 1 → usa ort-wasm-simd.wasm (sin hilos)
+//    → elimina el requisito de SharedArrayBuffer y COEP/COOP headers
+//    → resuelve el "Aborted()" en GitHub Pages
+// 2. wasmPaths → carga el WASM desde CDN jsDelivr
+//    → resuelve el error 404 del archivo .wasm en producción
+env.backends.onnx.wasm.numThreads = 1;
+env.backends.onnx.wasm.wasmPaths =
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+// ─────────────────────────────────────────────────────────────────────────────
 
 const C = {
   bg: "#0e0e0e", surface: "#161616", card: "#202020",
@@ -57,7 +68,7 @@ export default function ModelLoader({ onReady }) {
       setError(
         err.message?.includes("oom") || err.message?.includes("memory")
           ? "Sin memoria suficiente. Cerrá otras pestañas e intentá de nuevo."
-          : err.message || "Error al cargar el modelo."
+          : (err.message || "Error al cargar el modelo.")
       );
       setPhase("error");
     }
@@ -78,11 +89,23 @@ export default function ModelLoader({ onReady }) {
         border: `1px solid ${C.border}`, borderRadius: 20, padding: 32, textAlign: "center",
       }}>
         <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
-          <Avatar size={72} />
+          <div style={{
+            width: 72, height: 72, borderRadius: "50%", flexShrink: 0,
+            background: "linear-gradient(135deg, #9a5c1e 0%, #5c300a 100%)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 22, fontWeight: 700, color: "#fde8c0",
+            border: "2px solid #c47c30", boxShadow: "0 0 28px rgba(196,124,48,0.3)",
+          }}>MC</div>
         </div>
-        <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, color: "#f0ece0" }}>Michel Chion</h1>
-        <p style={{ margin: "0 0 24px", fontSize: 13, color: C.muted }}>Especialista en Audiovisión · IA local · $0</p>
 
+        <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, color: "#f0ece0" }}>
+          Michel Chion
+        </h1>
+        <p style={{ margin: "0 0 24px", fontSize: 13, color: C.muted }}>
+          Especialista en Audiovisión · IA local · $0
+        </p>
+
+        {/* Badge de modo */}
         {device && !isLoading && phase !== "error" && (
           <div style={{
             display: "inline-flex", alignItems: "center", gap: 6, padding: "5px 12px",
@@ -92,11 +115,12 @@ export default function ModelLoader({ onReady }) {
           }}>
             <span style={{ fontSize: 13 }}>{isWasm ? "🖥" : "⚡"}</span>
             <span style={{ fontSize: 12, color: isWasm ? "#c8c848" : C.green }}>
-              {isWasm ? "Modo CPU — funciona sin WebGPU ✓" : "Modo WebGPU — acelerado ✓"}
+              {isWasm ? "Modo CPU — sin WebGPU ✓" : "Modo WebGPU — acelerado ✓"}
             </span>
           </div>
         )}
 
+        {/* Info box */}
         {phase === "idle" && model && (
           <div style={{
             background: C.card, border: `1px solid ${C.border}`,
@@ -106,10 +130,10 @@ export default function ModelLoader({ onReady }) {
               {model.label}
             </div>
             <ul style={{ margin: 0, padding: "0 0 0 16px", fontSize: 12, color: C.muted, lineHeight: 1.9 }}>
-              <li><strong style={{ color: C.text }}>Descarga:</strong> {model.size} (solo la primera vez, queda en caché)</li>
+              <li><strong style={{ color: C.text }}>Descarga:</strong> {model.size} — solo la primera vez, queda en caché</li>
               <li><strong style={{ color: C.text }}>Velocidad:</strong> {model.tokensPerSec}</li>
-              <li><strong style={{ color: C.text }}>Ejecución:</strong> 100% en tu computadora — sin servidor</li>
-              <li><strong style={{ color: C.text }}>Navegadores:</strong> Chrome, Edge y Firefox</li>
+              <li><strong style={{ color: C.text }}>Ejecución:</strong> 100% en tu computadora, sin servidor</li>
+              <li><strong style={{ color: C.text }}>Navegadores:</strong> Chrome, Edge y Firefox ✓</li>
             </ul>
             {isWasm && (
               <div style={{
@@ -117,17 +141,21 @@ export default function ModelLoader({ onReady }) {
                 background: "#1a1a08", border: "1px solid #5a5a10",
                 fontSize: 12, color: "#c8c848", lineHeight: 1.6,
               }}>
-                ⏱ <strong>Modo CPU:</strong> cada respuesta tarda entre 15 y 60 segundos según el equipo. Es normal — el modelo corre en tu procesador sin GPU.
+                ⏱ <strong>Modo CPU:</strong> cada respuesta tarda 15–60 seg según el equipo.
+                Es normal — el modelo corre directo en tu procesador, sin GPU.
               </div>
             )}
           </div>
         )}
 
+        {/* Progreso */}
         {isLoading && (
           <div style={{ marginBottom: 24, textAlign: "left" }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, fontSize: 12 }}>
               <span style={{ color: C.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "75%" }}>
-                {progress < 100 ? (currentFile ? `↓ ${currentFile}` : "Preparando…") : "Inicializando…"}
+                {progress < 100
+                  ? (currentFile ? `↓ ${currentFile}` : "Preparando descarga…")
+                  : "Inicializando modelo…"}
               </span>
               <span style={{ color: C.amber, fontWeight: 700, flexShrink: 0 }}>{progress}%</span>
             </div>
@@ -140,21 +168,25 @@ export default function ModelLoader({ onReady }) {
               }} />
             </div>
             <p style={{ fontSize: 11, color: "#444", textAlign: "center", marginTop: 10 }}>
-              Esta descarga se guarda en caché — la próxima vez carga en segundos
+              Esta descarga se guarda en caché del navegador — la próxima vez carga en segundos
             </p>
           </div>
         )}
 
+        {/* Error */}
         {phase === "error" && (
           <div style={{
             background: "#450a0a", border: "1px solid #7f1d1d",
             borderRadius: 12, padding: "12px 16px", marginBottom: 20, textAlign: "left",
           }}>
-            <div style={{ color: C.red, fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Error al cargar</div>
+            <div style={{ color: C.red, fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
+              Error al cargar el modelo
+            </div>
             <div style={{ color: "#fca5a5", fontSize: 12, lineHeight: 1.6 }}>{error}</div>
           </div>
         )}
 
+        {/* Botón */}
         <button
           onClick={phase === "error" ? () => setPhase("idle") : handleLoad}
           disabled={isLoading || phase === "detecting" || !device}
@@ -163,18 +195,19 @@ export default function ModelLoader({ onReady }) {
             background: isLoading || !device ? C.card : `linear-gradient(135deg, #7a441a, ${C.amber})`,
             color: isLoading || !device ? C.muted : C.amberText,
             border: "none", borderRadius: 12, fontSize: 14, fontWeight: 600,
-            cursor: isLoading || !device ? "default" : "pointer", fontFamily: "inherit",
+            cursor: isLoading || !device ? "default" : "pointer",
+            fontFamily: "inherit",
           }}
         >
-          {phase === "detecting" && "Detectando…"}
-          {phase === "idle" && "Cargar modelo e iniciar"}
-          {phase === "loading" && `Descargando… ${progress}%`}
-          {phase === "error" && "Reintentar"}
+          {phase === "detecting" && "Detectando configuración…"}
+          {phase === "idle"      && "Cargar modelo e iniciar"}
+          {phase === "loading"   && `Descargando… ${progress}%`}
+          {phase === "error"     && "Reintentar"}
         </button>
 
         <p style={{ margin: "16px 0 0", fontSize: 10, color: "#333", lineHeight: 1.6 }}>
           Basado en «La Audiovisión» (Paidós, 1993) · Simulación académica con IA local ·
-          Las consultas se registran localmente con fines pedagógicos
+          Consultas registradas localmente con fines pedagógicos
         </p>
       </div>
     </div>

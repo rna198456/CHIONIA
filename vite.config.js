@@ -10,11 +10,11 @@ export default defineConfig({
   },
 
   worker: {
-    format: "es",          // workers en formato ES module
+    format: "es",
   },
 
   build: {
-    target: "esnext",      // soporte completo de async/await y BigInt
+    target: "esnext",
   },
 
   server: {
