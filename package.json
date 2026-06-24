@@ -1,7 +1,8 @@
 {
-  "name": "chion-bot",
-  "version": "2.0.0",
-  "description": "Chatbot Michel Chion – Transformers.js local, WebGPU + WASM fallback, $0",
+  "name": "chionia",
+  "version": "2.1.0",
+  "private": true,
+  "description": "Asistente academico sobre Michel Chion y analisis sonoro con base cerrada y LLM local opcional.",
   "type": "module",
   "scripts": {
     "dev": "vite",

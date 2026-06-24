@@ -4,23 +4,13 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "./",
-
   optimizeDeps: {
     exclude: ["@huggingface/transformers"],
   },
-
   worker: {
     format: "es",
   },
-
   build: {
     target: "esnext",
-  },
-
-  server: {
-    headers: {
-      "Cross-Origin-Opener-Policy": "same-origin",
-      "Cross-Origin-Embedder-Policy": "require-corp",
-    },
   },
 });

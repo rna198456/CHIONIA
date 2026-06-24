@@ -1,28 +1,61 @@
-import { useState, useRef } from "react";
-import ModelLoader from "./components/ModelLoader";
-import ChatInterface from "./components/ChatInterface";
+import { useMemo, useState } from "react";
+import Chat from "./components/Chat.jsx";
+import LoadingScreen from "./components/LoadingScreen.jsx";
+import { LocalModel } from "./llm/LocalModel.js";
 
-/**
- * PROBLEMA RESUELTO:
- * pipeline() de Transformers.js retorna una instancia de `Callable extends Function`.
- * typeof pipeline_instance === "function" → true.
- * React detecta eso y llama pipeline(estadoAnterior) como si fuera un setter.
- * Eso dispara "Input must be a string..." y deja el estado en undefined.
- *
- * SOLUCIÓN:
- * Usar useRef() para guardar el pipeline — los refs nunca interpretan funciones
- * como actualizadores. Un useState booleano controla el re-render.
- */
+const INITIAL_MODEL_STATE = {
+  status: "idle",
+  progress: 0,
+  file: "",
+  model: null,
+  error: "",
+};
+
 export default function App() {
-  const engineRef = useRef(null);          // ← ref, no state
-  const [ready, setReady] = useState(false);
+  const model = useMemo(() => new LocalModel(), []);
+  const [hasEntered, setHasEntered] = useState(false);
+  const [modelState, setModelState] = useState(INITIAL_MODEL_STATE);
 
-  const handleReady = (pipe) => {
-    engineRef.current = pipe;              // guarda el pipeline sin que React lo llame
-    setReady(true);                        // dispara el re-render
-  };
+  async function loadModel() {
+    if (model.isReady || modelState.status === "loading") return;
 
-  return ready
-    ? <ChatInterface engine={engineRef.current} />
-    : <ModelLoader onReady={handleReady} />;
+    setModelState({ ...INITIAL_MODEL_STATE, status: "loading" });
+
+    try {
+      await model.load((progress) => {
+        setModelState((current) => ({
+          ...current,
+          ...progress,
+          error: "",
+        }));
+      });
+      setHasEntered(true);
+    } catch (error) {
+      setModelState((current) => ({
+        ...current,
+        status: "error",
+        error:
+          "No se pudo cargar el modelo local. Podés seguir usando la base cerrada. Detalle: " +
+          (error.message || String(error)),
+      }));
+    }
+  }
+
+  if (!hasEntered) {
+    return (
+      <div className="app-shell">
+        <LoadingScreen
+          modelState={modelState}
+          onLoadModel={loadModel}
+          onSkipModel={() => setHasEntered(true)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-shell">
+      <Chat model={model} modelState={modelState} onLoadModel={loadModel} />
+    </div>
+  );
 }

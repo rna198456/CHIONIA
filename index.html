@@ -1,19 +1,15 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Michel Chion · Especialista en Audiovisión</title>
-    <meta name="description" content="Chatbot académico sobre La Audiovisión de Michel Chion. IA local en tu navegador, costo $0." />
-    <!--
-      coi-serviceworker ELIMINADO.
-      Era necesario para Cross-Origin Isolation (SharedArrayBuffer + WASM threading).
-      Con env.backends.onnx.wasm.numThreads = 1 en ModelLoader.jsx usamos
-      ort-wasm-simd.wasm (single-thread) que NO requiere SharedArrayBuffer ni
-      headers especiales → funciona en cualquier navegador y GitHub Pages.
-    -->
+    <meta
+      name="description"
+      content="Asistente academico sobre Michel Chion y analisis sonoro cinematografico."
+    />
+    <title>CHIONIA · Michel Chion</title>
   </head>
-  <body style="margin:0;background:#0e0e0e;">
+  <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
