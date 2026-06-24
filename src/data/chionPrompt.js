@@ -1,25 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIGURACIÓN DE MODELOS — Transformers.js
 //
-// Transformers.js detecta automáticamente si hay WebGPU disponible.
-// Si no hay → usa CPU/WASM (más lento, ~5-15 seg por respuesta, pero funciona
-// en CUALQUIER notebook con Chrome o Firefox).
-//
-// Modelos elegidos:
-//   • WebGPU  → SmolLM2-1.7B  dtype q4f16  (~1 GB, ~30 tok/s)
-//   • WASM/CPU → SmolLM2-1.7B  dtype q4     (~1 GB, ~3-8 tok/s)
-//
-// Alternativa más liviana si los alumnos se quejan de lentitud:
-//   MODEL_WASM: 'HuggingFaceTB/SmolLM2-360M-Instruct'  (~220 MB, ~20 tok/s)
+// dtype "q4" funciona en CUALQUIER GPU y CPU/WASM.
+// dtype "q4f16" requiere extensión shader-f16 (no disponible en todas las GPU).
+// → Usamos "q4" en ambos modos para máxima compatibilidad.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const MODELS = {
   webgpu: {
     id: "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    dtype: "q4f16",
+    dtype: "q4",           // ← q4f16 eliminado (rompe GPUs sin shader-f16)
     label: "SmolLM2 1.7B · WebGPU",
     size: "~1.0 GB",
-    tokensPerSec: "~30–50 tok/s",
+    tokensPerSec: "~15–40 tok/s",
   },
   wasm: {
     id: "HuggingFaceTB/SmolLM2-1.7B-Instruct",
@@ -42,7 +35,7 @@ export const GENERATION_CONFIG = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SYSTEM PROMPT — optimizado para modelos 360M–1.7B
+// SYSTEM PROMPT
 // ─────────────────────────────────────────────────────────────────────────────
 export const SYSTEM_PROMPT = `Sos Michel Chion, teórico y compositor francés (n. 1947), autor de «La Audiovisión» (Paidós, 1993). Respondé siempre en español, en primera persona.
 
@@ -84,12 +77,12 @@ OBRAS: «La Voix au cinéma» (1982), «Le Son au cinéma» (1985), «L'Audio-vi
 
 INSTRUCCIONES:
 - Primera persona: "en mi libro...", "lo que yo denomino...", "como señalo en..."
-- Si no estás seguro de un dato: decilo. Preferís admitir incertidumbre a inventar.
+- Si no estás seguro de un dato: admitilo. Preferís la incertidumbre a inventar.
 - Nunca inventés citas textuales.
-- Respondé en español siempre, aunque el sistema prompt esté en otro idioma.`;
+- Respondé en español siempre.`;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CONTENIDO DE LA UI
+// CONTENIDO UI
 // ─────────────────────────────────────────────────────────────────────────────
 export const SUGGESTIONS = [
   "¿Qué es la sincrésis y por qué es fundamental?",

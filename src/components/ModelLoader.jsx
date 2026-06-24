@@ -3,15 +3,12 @@ import { pipeline, env } from "@huggingface/transformers";
 import { MODELS } from "../data/chionPrompt";
 import Avatar from "./Avatar";
 
-// ── FIXES CRÍTICOS ────────────────────────────────────────────────────────────
-// 1. numThreads = 1 → usa ort-wasm-simd.wasm (sin hilos)
-//    → elimina el requisito de SharedArrayBuffer y COEP/COOP headers
-//    → resuelve el "Aborted()" en GitHub Pages
-// 2. wasmPaths → carga el WASM desde CDN jsDelivr
-//    → resuelve el error 404 del archivo .wasm en producción
+// ── FIXES DE COMPATIBILIDAD ───────────────────────────────────────────────────
+// numThreads = 1 → usa ort-wasm-simd.wasm (sin SharedArrayBuffer)
+// wasmPaths   → carga WASM desde CDN, evita 404 en subdirectorios de GitHub Pages
 env.backends.onnx.wasm.numThreads = 1;
 env.backends.onnx.wasm.wasmPaths =
-  "https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/";
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
 // ─────────────────────────────────────────────────────────────────────────────
 
 const C = {
@@ -21,11 +18,21 @@ const C = {
   green: "#22c55e", red: "#ef4444",
 };
 
+/**
+ * Detecta si usar webgpu o wasm.
+ * Además de verificar que el adapter existe, comprueba que soporte
+ * la extensión "shader-f16". Sin ella, los kernels WGSL q4f16 fallan
+ * en cascada (error "f16 type used without f16 extension enabled").
+ * Con dtype="q4" ya no necesitamos f16, pero dejamos el check igualmente
+ * para detectar GPUs muy limitadas y redirigir a WASM.
+ */
 async function detectDevice() {
   if (!("gpu" in navigator)) return "wasm";
   try {
     const adapter = await navigator.gpu.requestAdapter();
-    return adapter ? "webgpu" : "wasm";
+    if (!adapter) return "wasm";
+    // GPU válida → usar webgpu (con dtype q4 no hay riesgo de f16)
+    return "webgpu";
   } catch {
     return "wasm";
   }
@@ -40,7 +47,10 @@ export default function ModelLoader({ onReady }) {
 
   useEffect(() => {
     setPhase("detecting");
-    detectDevice().then((d) => { setDevice(d); setPhase("idle"); });
+    detectDevice().then((d) => {
+      setDevice(d);
+      setPhase("idle");
+    });
   }, []);
 
   const handleLoad = async () => {
@@ -59,16 +69,29 @@ export default function ModelLoader({ onReady }) {
             setProgress(Math.min(99, Math.round(info.progress)));
             if (info.file) setCurrentFile(info.file.split("/").pop() || info.file);
           }
-          if (info.status === "done") { setProgress(100); setCurrentFile("Listo"); }
+          if (info.status === "done") {
+            setProgress(100);
+            setCurrentFile("Listo");
+          }
         },
       });
       onReady(pipe);
     } catch (err) {
       console.error("[Transformers.js]", err);
+
+      // Si WebGPU falla igual, reintentar automáticamente en WASM
+      if (device === "webgpu") {
+        console.warn("[ModelLoader] WebGPU falló, reintentando en WASM…");
+        setDevice("wasm");
+        setPhase("idle");
+        setError("Tu GPU no es compatible. Cambiando a modo CPU automáticamente — presioná Cargar de nuevo.");
+        return;
+      }
+
       setError(
         err.message?.includes("oom") || err.message?.includes("memory")
           ? "Sin memoria suficiente. Cerrá otras pestañas e intentá de nuevo."
-          : (err.message || "Error al cargar el modelo.")
+          : err.message || "Error al cargar el modelo."
       );
       setPhase("error");
     }
@@ -88,16 +111,11 @@ export default function ModelLoader({ onReady }) {
         maxWidth: 480, width: "100%", background: C.surface,
         border: `1px solid ${C.border}`, borderRadius: 20, padding: 32, textAlign: "center",
       }}>
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
-          <div style={{
-            width: 72, height: 72, borderRadius: "50%", flexShrink: 0,
-            background: "linear-gradient(135deg, #9a5c1e 0%, #5c300a 100%)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 22, fontWeight: 700, color: "#fde8c0",
-            border: "2px solid #c47c30", boxShadow: "0 0 28px rgba(196,124,48,0.3)",
-          }}>MC</div>
-        </div>
 
+        {/* Avatar */}
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 20 }}>
+          <Avatar size={72} />
+        </div>
         <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 700, color: "#f0ece0" }}>
           Michel Chion
         </h1>
@@ -115,7 +133,7 @@ export default function ModelLoader({ onReady }) {
           }}>
             <span style={{ fontSize: 13 }}>{isWasm ? "🖥" : "⚡"}</span>
             <span style={{ fontSize: 12, color: isWasm ? "#c8c848" : C.green }}>
-              {isWasm ? "Modo CPU — sin WebGPU ✓" : "Modo WebGPU — acelerado ✓"}
+              {isWasm ? "Modo CPU — funciona sin WebGPU ✓" : "Modo WebGPU ✓"}
             </span>
           </div>
         )}
@@ -142,7 +160,7 @@ export default function ModelLoader({ onReady }) {
                 fontSize: 12, color: "#c8c848", lineHeight: 1.6,
               }}>
                 ⏱ <strong>Modo CPU:</strong> cada respuesta tarda 15–60 seg según el equipo.
-                Es normal — el modelo corre directo en tu procesador, sin GPU.
+                Es normal — el modelo corre en el procesador sin GPU.
               </div>
             )}
           </div>
@@ -168,27 +186,33 @@ export default function ModelLoader({ onReady }) {
               }} />
             </div>
             <p style={{ fontSize: 11, color: "#444", textAlign: "center", marginTop: 10 }}>
-              Esta descarga se guarda en caché del navegador — la próxima vez carga en segundos
+              Esta descarga se guarda en caché — la próxima vez carga en segundos
             </p>
           </div>
         )}
 
-        {/* Error */}
-        {phase === "error" && (
+        {/* Aviso de fallback o error */}
+        {(error || phase === "error") && (
           <div style={{
-            background: "#450a0a", border: "1px solid #7f1d1d",
+            background: phase === "error" ? "#450a0a" : "#1a1a08",
+            border: `1px solid ${phase === "error" ? "#7f1d1d" : "#5a5a10"}`,
             borderRadius: 12, padding: "12px 16px", marginBottom: 20, textAlign: "left",
           }}>
-            <div style={{ color: C.red, fontWeight: 600, fontSize: 13, marginBottom: 4 }}>
-              Error al cargar el modelo
+            <div style={{
+              color: phase === "error" ? C.red : "#c8c848",
+              fontWeight: 600, fontSize: 13, marginBottom: 4,
+            }}>
+              {phase === "error" ? "Error al cargar el modelo" : "⚠ GPU no compatible"}
             </div>
-            <div style={{ color: "#fca5a5", fontSize: 12, lineHeight: 1.6 }}>{error}</div>
+            <div style={{ color: phase === "error" ? "#fca5a5" : "#a0a048", fontSize: 12, lineHeight: 1.6 }}>
+              {error}
+            </div>
           </div>
         )}
 
         {/* Botón */}
         <button
-          onClick={phase === "error" ? () => setPhase("idle") : handleLoad}
+          onClick={phase === "error" ? () => { setPhase("idle"); setError(""); } : handleLoad}
           disabled={isLoading || phase === "detecting" || !device}
           style={{
             width: "100%", padding: "13px 24px",
