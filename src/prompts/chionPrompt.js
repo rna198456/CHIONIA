@@ -17,7 +17,7 @@ export const SUGGESTIONS = [
 ];
 
 export const GENERATION_CONFIG = {
-  max_new_tokens: 280,
+  max_new_tokens: 160,
   temperature: 0.25,
   top_p: 0.85,
   do_sample: false,

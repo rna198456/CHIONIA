@@ -98,3 +98,29 @@ async function generateAnswer(id, payload) {
   const output = await pipe(prompt, {
     ...GENERATION_CONFIG,
     return_full_text: false,
+  });
+
+  post(id, "generated", {
+    text: readGeneratedText(output).trim() || payload.closedAnswer,
+  });
+}
+
+self.onmessage = async (event) => {
+  const { id, type, payload } = event.data;
+
+  try {
+    if (type === "load") {
+      await loadModel(id);
+      return;
+    }
+
+    if (type === "generate") {
+      await generateAnswer(id, payload);
+      return;
+    }
+
+    throw new Error(`Accion no soportada: ${type}`);
+  } catch (error) {
+    post(id, "error", serializeError(error));
+  }
+};
