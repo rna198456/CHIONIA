@@ -84,13 +84,13 @@ export default function ChatInterface({ apiKey, onLogout }) {
         body: JSON.stringify(body),
       });
 
-      if (res.status === 400) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data?.error?.message || "Request inválido.");
-      }
-      if (res.status === 403) throw new Error("API key inválida o sin permisos. Generá una nueva en AI Studio.");
+      const errBody = await res.json().catch(() => ({}));
+      if (res.status === 400) throw new Error(errBody?.error?.message || "Request inválido.");
+      if (res.status === 401) throw new Error("API key inválida. Revisá que la copiaste completa desde aistudio.google.com/app/apikey — luego usá el botón 🔑 del header para cambiarla.");
+      if (res.status === 403) throw new Error("Key sin permisos. Generá una nueva en aistudio.google.com/app/apikey y usá el botón 🔑 para actualizarla.");
+      if (res.status === 404) throw new Error("API no habilitada. Andá a aistudio.google.com/app/apikey, creá una key nueva (eso la habilita automáticamente) y usá el botón 🔑 del header para actualizarla.");
       if (res.status === 429) throw new Error("Límite de consultas alcanzado. Esperá unos segundos y volvé a intentar.");
-      if (!res.ok) throw new Error(`Error ${res.status} de la API.`);
+      if (!res.ok) throw new Error(`Error ${res.status}: ${errBody?.error?.message || "Error desconocido de la API."}`);
 
       // Leer el stream SSE línea por línea
       const reader = res.body.getReader();
