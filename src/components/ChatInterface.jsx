@@ -1,9 +1,8 @@
 import { useState, useRef, useEffect } from "react";
-import { TextStreamer } from "@huggingface/transformers";
 import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
-import { SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS, WELCOME_MESSAGE } from "../data/chionPrompt";
-import { logInteraction } from "../utils/storage";
+import { SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS, WELCOME_MESSAGE, GEMINI_ENDPOINT } from "../data/chionPrompt";
+import { logInteraction, clearApiKey } from "../utils/storage";
 
 const C = {
   bg: "#0e0e0e", surface: "#161616", card: "#202020",
@@ -25,7 +24,7 @@ function AudioBars() {
   );
 }
 
-export default function ChatInterface({ engine }) {
+export default function ChatInterface({ apiKey, onLogout }) {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -33,12 +32,16 @@ export default function ChatInterface({ engine }) {
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(false);
-  const fullResponseRef = useRef(""); // acumula tokens fuera del closure
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, generating]);
 
+  /**
+   * Llama a Gemini con streaming (SSE).
+   * Gemini usa roles "user" / "model" (no "assistant").
+   * El system prompt va en "system_instruction".
+   */
   const send = async (override) => {
     const txt = (override ?? input).trim();
     if (!txt || generating) return;
@@ -50,65 +53,91 @@ export default function ChatInterface({ engine }) {
     if (textareaRef.current) textareaRef.current.style.height = "46px";
     setGenerating(true);
     abortRef.current = false;
-    fullResponseRef.current = "";
 
     // Agrega placeholder del asistente
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    setMessages((prev) => [...prev, { role: "model", content: "" }]);
+
+    let fullResponse = "";
 
     try {
-      // Limitar historial a últimos 8 mensajes para no agotar el contexto
-      const history = updated.slice(-8).map(({ role, content }) => ({ role, content }));
-      const apiMessages = [
-        { role: "system", content: SYSTEM_PROMPT },
-        ...history,
-      ];
+      // Convertir historial al formato de Gemini
+      // Excluye el mensaje de bienvenida (primer mensaje) que no viene del usuario
+      // Limita a últimos 10 turnos para no agotar tokens
+      const history = updated
+        .slice(1)          // omite el welcome
+        .slice(-10)        // últimos 10 mensajes
+        .map(({ role, content }) => ({
+          role,            // "user" | "model" — ya en formato correcto
+          parts: [{ text: content }],
+        }));
 
-      // ── TextStreamer ──────────────────────────────────────────────────────
-      // engine.tokenizer: el tokenizer del pipeline de Transformers.js
-      // skip_prompt: true → solo tokens nuevos, no el prompt
-      // decode_kwargs.skip_special_tokens: elimina tokens <|endoftext|> etc.
-      const streamer = new TextStreamer(engine.tokenizer, {
-        skip_prompt: true,
-        decode_kwargs: { skip_special_tokens: true },
-        callback_function: (token) => {
-          if (abortRef.current) return;
-          fullResponseRef.current += token;
-          // Actualiza el último mensaje en tiempo real
-          setMessages((prev) => {
-            const next = [...prev];
-            next[next.length - 1] = {
-              role: "assistant",
-              content: fullResponseRef.current,
-            };
-            return next;
-          });
-        },
+      const body = {
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents: history,
+        generationConfig: GENERATION_CONFIG,
+      };
+
+      // Streaming SSE: alt=sse devuelve chunks line by line
+      const res = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}&alt=sse`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
 
-      // ── Inferencia ────────────────────────────────────────────────────────
-      await engine(apiMessages, {
-        max_new_tokens:      GENERATION_CONFIG.max_new_tokens,
-        temperature:         GENERATION_CONFIG.temperature,
-        top_p:               GENERATION_CONFIG.top_p,
-        do_sample:           GENERATION_CONFIG.do_sample,
-        repetition_penalty:  GENERATION_CONFIG.repetition_penalty,
-        streamer,
-        return_full_text: false,
-      });
+      if (res.status === 400) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error?.message || "Request inválido.");
+      }
+      if (res.status === 403) throw new Error("API key inválida o sin permisos. Generá una nueva en AI Studio.");
+      if (res.status === 429) throw new Error("Límite de consultas alcanzado. Esperá unos segundos y volvé a intentar.");
+      if (!res.ok) throw new Error(`Error ${res.status} de la API.`);
 
-      if (fullResponseRef.current && !abortRef.current) {
-        logInteraction(txt, fullResponseRef.current);
+      // Leer el stream SSE línea por línea
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        if (abortRef.current) { reader.cancel(); break; }
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? ""; // la última línea puede estar incompleta
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (!json || json === "[DONE]") continue;
+          try {
+            const chunk = JSON.parse(json);
+            const delta = chunk?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+            if (delta) {
+              fullResponse += delta;
+              setMessages((prev) => {
+                const next = [...prev];
+                next[next.length - 1] = { role: "model", content: fullResponse };
+                return next;
+              });
+            }
+          } catch { /* chunk mal formado — ignorar */ }
+        }
+      }
+
+      if (fullResponse && !abortRef.current) {
+        logInteraction(txt, fullResponse);
       }
 
     } catch (err) {
       if (!abortRef.current) {
-        console.error("[Inference]", err);
-        const errorMsg = err?.message?.includes("aborted")
-          ? "Generación cancelada."
-          : "Error al generar la respuesta. Intentá de nuevo.";
+        console.error("[Gemini]", err);
         setMessages((prev) => {
           const next = [...prev];
-          next[next.length - 1] = { role: "assistant", content: errorMsg };
+          next[next.length - 1] = {
+            role: "model",
+            content: `⚠ ${err.message || "Error al conectar con la API. Revisá tu clave y tu conexión."}`,
+          };
           return next;
         });
       }
@@ -122,8 +151,13 @@ export default function ChatInterface({ engine }) {
     setMessages([WELCOME_MESSAGE]);
     setInput("");
     setGenerating(false);
-    fullResponseRef.current = "";
     if (textareaRef.current) textareaRef.current.style.height = "46px";
+  };
+
+  const handleLogout = () => {
+    if (!confirm("¿Eliminar tu API key guardada? Tendrás que ingresarla de nuevo la próxima vez.")) return;
+    clearApiKey();
+    onLogout();
   };
 
   const handleChange = (e) => {
@@ -152,16 +186,13 @@ export default function ChatInterface({ engine }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 15, color: "#f0ece0" }}>Michel Chion</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-            Teórico · «La Audiovisión» · IA local — sin servidor
+            Teórico · «La Audiovisión» · Gemini 1.5 Flash · $0
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
-              display: "inline-block", boxShadow: "0 0 6px #4ade8080",
-            }} />
-            <span style={{ fontSize: 11, color: C.muted }}>Local</span>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade8080" }} />
+            <span style={{ fontSize: 11, color: C.muted }}>Conectado</span>
           </div>
           <button onClick={() => setShowPanel(true)} style={{
             fontSize: 11, color: C.amber, background: "#1c1008",
@@ -173,6 +204,10 @@ export default function ChatInterface({ engine }) {
             border: `1px solid ${C.border}`, borderRadius: 8,
             padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
           }}>Reiniciar</button>
+          <button onClick={handleLogout} style={{
+            fontSize: 11, color: "#666", background: "transparent",
+            border: "none", cursor: "pointer", fontFamily: "inherit", padding: "5px 4px",
+          }} title="Eliminar API key">🔑</button>
         </div>
       </header>
 
@@ -188,15 +223,15 @@ export default function ChatInterface({ engine }) {
               justifyContent: m.role === "user" ? "flex-end" : "flex-start",
               alignItems: "flex-start", gap: 10,
             }}>
-              {m.role === "assistant" && <Avatar size={30} />}
+              {m.role !== "user" && <Avatar size={30} />}
               <div style={{
                 maxWidth: "78%", padding: "11px 15px",
                 borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "4px 16px 16px 16px",
                 fontSize: 14, lineHeight: 1.75, whiteSpace: "pre-wrap",
                 background: m.role === "user" ? C.amberDeep : C.card,
                 color: m.role === "user" ? C.amberText : C.text,
-                border: m.role === "assistant" ? `1px solid ${C.border}` : "none",
-                ...(generating && i === messages.length - 1 && m.role === "assistant" && m.content
+                border: m.role !== "user" ? `1px solid ${C.border}` : "none",
+                ...(generating && i === messages.length - 1 && m.role !== "user" && m.content
                   ? { borderRight: `2px solid ${C.amber}` } : {}),
               }}>
                 {m.content === "" && generating && i === messages.length - 1
@@ -206,6 +241,7 @@ export default function ChatInterface({ engine }) {
             </div>
           ))}
 
+          {/* Sugerencias */}
           {showSuggestions && (
             <div style={{ marginTop: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -247,11 +283,7 @@ export default function ChatInterface({ engine }) {
               value={input}
               onChange={handleChange}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder={
-                generating
-                  ? "Generando respuesta… (puede tardar hasta 1 min en CPU)"
-                  : "Preguntale a Michel Chion…"
-              }
+              placeholder="Preguntale a Michel Chion sobre su obra y conceptos…"
               rows={1}
               style={{
                 flex: 1, background: C.card, border: `1px solid ${C.border}`,

@@ -1,8 +1,7 @@
 {
-  "name": "chionia",
-  "version": "2.1.0",
-  "private": true,
-  "description": "Asistente academico sobre Michel Chion y analisis sonoro con base cerrada y LLM local opcional.",
+  "name": "chion-bot",
+  "version": "3.0.0",
+  "description": "Chatbot Michel Chion – Gemini API personal, GitHub Pages, $0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@huggingface/transformers": "^3.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

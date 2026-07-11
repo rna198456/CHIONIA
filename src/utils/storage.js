@@ -1,13 +1,21 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// Sistema de registro con localStorage
-// Reemplaza la API window.storage (exclusiva de artifacts de claude.ai)
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── API Key ──────────────────────────────────────────────────────────────────
+const KEY_STORAGE = "chion_gemini_key";
 
+export function saveApiKey(key) {
+  try { localStorage.setItem(KEY_STORAGE, key.trim()); } catch {}
+}
+export function loadApiKey() {
+  try { return localStorage.getItem(KEY_STORAGE) || ""; } catch { return ""; }
+}
+export function clearApiKey() {
+  try { localStorage.removeItem(KEY_STORAGE); } catch {}
+}
+
+// ─── Log de interacciones ─────────────────────────────────────────────────────
 const LOG_KEY = "chion_log";
 const SESSION_KEY = "chion_sid";
-const MAX_ENTRIES = 1000; // ~200 KB aprox.
+const MAX_ENTRIES = 1000;
 
-/** Obtiene o crea el ID de sesión (persiste por pestaña, no entre recargas) */
 export function getSessionId() {
   let sid = sessionStorage.getItem(SESSION_KEY);
   if (!sid) {
@@ -17,20 +25,11 @@ export function getSessionId() {
   return sid;
 }
 
-/** Recupera todas las entradas del log (más reciente primero) */
 export function getLog() {
-  try {
-    return JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem(LOG_KEY) || "[]"); }
+  catch { return []; }
 }
 
-/**
- * Registra una interacción.
- * @param {string} question  - Pregunta del alumno
- * @param {string} response  - Respuesta completa del bot
- */
 export function logInteraction(question, response) {
   try {
     const entries = getLog();
@@ -40,25 +39,14 @@ export function logInteraction(question, response) {
       q: question,
       r: (response || "").substring(0, 150),
     });
-    localStorage.setItem(
-      LOG_KEY,
-      JSON.stringify(entries.slice(0, MAX_ENTRIES))
-    );
-  } catch {
-    /* fallo silencioso – el log nunca interrumpe la conversación */
-  }
+    localStorage.setItem(LOG_KEY, JSON.stringify(entries.slice(0, MAX_ENTRIES)));
+  } catch {}
 }
 
-/** Elimina todo el registro */
 export function clearLog() {
-  try {
-    localStorage.removeItem(LOG_KEY);
-  } catch {
-    /* silent */
-  }
+  try { localStorage.removeItem(LOG_KEY); } catch {}
 }
 
-/** Exporta el log como CSV y dispara la descarga */
 export function exportCSV(entries) {
   const rows = [
     ["Fecha", "Hora", "Sesión", "Pregunta", "Respuesta (inicio)"],
