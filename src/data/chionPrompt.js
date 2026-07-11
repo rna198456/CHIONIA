@@ -1,7 +1,12 @@
 // ─── Configuración Gemini ─────────────────────────────────────────────────────
 // Modelos en orden de disponibilidad — se prueban en secuencia
 export const GEMINI_MODELS = [
-  "gemini-1.5-flash",
+  "gemini-2.5-flash",        // mejor calidad, razonamiento mejorado
+  "gemini-2.0-flash",        // rápido y gratuito
+  "gemini-2.0-flash-001",    // versión fija de 2.0
+  "gemini-2.0-flash-lite-001", // más liviano
+  "gemini-2.5-pro",          // máxima calidad (puede tener límite)
+  "gemini-1.5-flash",        // fallback legacy
   "gemini-1.5-flash-latest",
   "gemini-1.0-pro",
   "gemini-pro",
