@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from "react";
 import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
-import { SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS, WELCOME_MESSAGE, GEMINI_ENDPOINT } from "../data/chionPrompt";
+import {
+  SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS,
+  WELCOME_MESSAGE, GEMINI_ENDPOINT
+} from "../data/chionPrompt";
 import { logInteraction, clearApiKey } from "../utils/storage";
 
 const C = {
@@ -37,11 +40,6 @@ export default function ChatInterface({ apiKey, onLogout }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, generating]);
 
-  /**
-   * Llama a Gemini con streaming (SSE).
-   * Gemini usa roles "user" / "model" (no "assistant").
-   * El system prompt va en "system_instruction".
-   */
   const send = async (override) => {
     const txt = (override ?? input).trim();
     if (!txt || generating) return;
@@ -54,79 +52,62 @@ export default function ChatInterface({ apiKey, onLogout }) {
     setGenerating(true);
     abortRef.current = false;
 
-    // Agrega placeholder del asistente
+    // Placeholder vacío mientras espera
     setMessages((prev) => [...prev, { role: "model", content: "" }]);
 
-    let fullResponse = "";
-
     try {
-      // Convertir historial al formato de Gemini
-      // Excluye el mensaje de bienvenida (primer mensaje) que no viene del usuario
-      // Limita a últimos 10 turnos para no agotar tokens
+      // ── Construir historial para Gemini ─────────────────────────────────
+      // Gemini usa roles "user" / "model"
+      // Limitar a últimos 10 mensajes para no agotar tokens
       const history = updated
-        .slice(1)          // omite el welcome
-        .slice(-10)        // últimos 10 mensajes
+        .slice(1)     // omite el welcome (no es user)
+        .slice(-10)
         .map(({ role, content }) => ({
-          role,            // "user" | "model" — ya en formato correcto
+          role,
           parts: [{ text: content }],
         }));
 
       const body = {
-        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        system_instruction: {
+          parts: [{ text: SYSTEM_PROMPT }],
+        },
         contents: history,
         generationConfig: GENERATION_CONFIG,
       };
 
-      // Streaming SSE: alt=sse devuelve chunks line by line
-      const res = await fetch(`${GEMINI_ENDPOINT}?key=${apiKey}&alt=sse`, {
+      // ── Llamada a generateContent (sin streaming) ────────────────────────
+      const res = await fetch(GEMINI_ENDPOINT(apiKey), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
-      const errBody = await res.json().catch(() => ({}));
-      if (res.status === 400) throw new Error(errBody?.error?.message || "Request inválido.");
-      if (res.status === 401) throw new Error("API key inválida. Revisá que la copiaste completa desde aistudio.google.com/app/apikey — luego usá el botón 🔑 del header para cambiarla.");
-      if (res.status === 403) throw new Error("Key sin permisos. Generá una nueva en aistudio.google.com/app/apikey y usá el botón 🔑 para actualizarla.");
-      if (res.status === 404) throw new Error("API no habilitada. Andá a aistudio.google.com/app/apikey, creá una key nueva (eso la habilita automáticamente) y usá el botón 🔑 del header para actualizarla.");
-      if (res.status === 429) throw new Error("Límite de consultas alcanzado. Esperá unos segundos y volvé a intentar.");
-      if (!res.ok) throw new Error(`Error ${res.status}: ${errBody?.error?.message || "Error desconocido de la API."}`);
+      // Leer el body una sola vez
+      const data = await res.json().catch(() => ({}));
 
-      // Leer el stream SSE línea por línea
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        if (abortRef.current) { reader.cancel(); break; }
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // la última línea puede estar incompleta
-
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          const json = line.slice(6).trim();
-          if (!json || json === "[DONE]") continue;
-          try {
-            const chunk = JSON.parse(json);
-            const delta = chunk?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-            if (delta) {
-              fullResponse += delta;
-              setMessages((prev) => {
-                const next = [...prev];
-                next[next.length - 1] = { role: "model", content: fullResponse };
-                return next;
-              });
-            }
-          } catch { /* chunk mal formado — ignorar */ }
-        }
+      if (!res.ok) {
+        const msg = data?.error?.message || "";
+        if (res.status === 400) throw new Error(msg || "Request inválido.");
+        if (res.status === 401) throw new Error("API key inválida. Usá el botón 🔑 del header para cambiarla.");
+        if (res.status === 403) throw new Error("Key sin permisos. Generá una nueva en aistudio.google.com/app/apikey y usá 🔑 para actualizarla.");
+        if (res.status === 404) throw new Error("API no disponible. Asegurate de crear la key desde aistudio.google.com/app/apikey (no desde Google Cloud Console).");
+        if (res.status === 429) throw new Error("Límite de consultas alcanzado. Esperá unos segundos y volvé a intentar.");
+        throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
       }
 
-      if (fullResponse && !abortRef.current) {
-        logInteraction(txt, fullResponse);
+      // Extraer el texto de la respuesta
+      const reply =
+        data?.candidates?.[0]?.content?.parts?.[0]?.text
+        ?? data?.candidates?.[0]?.output
+        ?? "No obtuve respuesta. Intentá de nuevo.";
+
+      if (!abortRef.current) {
+        setMessages((prev) => {
+          const next = [...prev];
+          next[next.length - 1] = { role: "model", content: reply };
+          return next;
+        });
+        logInteraction(txt, reply);
       }
 
     } catch (err) {
@@ -136,7 +117,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
           const next = [...prev];
           next[next.length - 1] = {
             role: "model",
-            content: `⚠ ${err.message || "Error al conectar con la API. Revisá tu clave y tu conexión."}`,
+            content: `⚠ ${err.message || "Error al conectar con la API."}`,
           };
           return next;
         });
@@ -155,7 +136,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
   };
 
   const handleLogout = () => {
-    if (!confirm("¿Eliminar tu API key guardada? Tendrás que ingresarla de nuevo la próxima vez.")) return;
+    if (!confirm("¿Eliminar tu API key guardada? Vas a tener que ingresarla de nuevo.")) return;
     clearApiKey();
     onLogout();
   };
@@ -191,7 +172,10 @@ export default function ChatInterface({ apiKey, onLogout }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade8080" }} />
+            <span style={{
+              width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
+              display: "inline-block", boxShadow: "0 0 6px #4ade8080",
+            }} />
             <span style={{ fontSize: 11, color: C.muted }}>Conectado</span>
           </div>
           <button onClick={() => setShowPanel(true)} style={{
@@ -204,10 +188,10 @@ export default function ChatInterface({ apiKey, onLogout }) {
             border: `1px solid ${C.border}`, borderRadius: 8,
             padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
           }}>Reiniciar</button>
-          <button onClick={handleLogout} style={{
-            fontSize: 11, color: "#666", background: "transparent",
-            border: "none", cursor: "pointer", fontFamily: "inherit", padding: "5px 4px",
-          }} title="Eliminar API key">🔑</button>
+          <button onClick={handleLogout} title="Cambiar API key" style={{
+            fontSize: 14, color: "#444", background: "transparent",
+            border: "none", cursor: "pointer", padding: "5px 4px",
+          }}>🔑</button>
         </div>
       </header>
 
@@ -215,8 +199,10 @@ export default function ChatInterface({ apiKey, onLogout }) {
 
       {/* ── Mensajes ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "22px 14px 8px" }}>
-        <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
-
+        <div style={{
+          maxWidth: 680, margin: "0 auto",
+          display: "flex", flexDirection: "column", gap: 16,
+        }}>
           {messages.map((m, i) => (
             <div key={i} style={{
               display: "flex",
@@ -226,13 +212,13 @@ export default function ChatInterface({ apiKey, onLogout }) {
               {m.role !== "user" && <Avatar size={30} />}
               <div style={{
                 maxWidth: "78%", padding: "11px 15px",
-                borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "4px 16px 16px 16px",
+                borderRadius: m.role === "user"
+                  ? "16px 16px 4px 16px"
+                  : "4px 16px 16px 16px",
                 fontSize: 14, lineHeight: 1.75, whiteSpace: "pre-wrap",
                 background: m.role === "user" ? C.amberDeep : C.card,
                 color: m.role === "user" ? C.amberText : C.text,
                 border: m.role !== "user" ? `1px solid ${C.border}` : "none",
-                ...(generating && i === messages.length - 1 && m.role !== "user" && m.content
-                  ? { borderRight: `2px solid ${C.amber}` } : {}),
               }}>
                 {m.content === "" && generating && i === messages.length - 1
                   ? <AudioBars />
@@ -259,8 +245,14 @@ export default function ChatInterface({ apiKey, onLogout }) {
                     padding: "9px 12px", color: C.textDim,
                     cursor: "pointer", lineHeight: 1.5, fontFamily: "inherit",
                   }}
-                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.color = C.text; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}>
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = C.amber;
+                    e.currentTarget.style.color = C.text;
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = C.border;
+                    e.currentTarget.style.color = C.textDim;
+                  }}>
                     {s}
                   </button>
                 ))}
@@ -282,7 +274,12 @@ export default function ChatInterface({ apiKey, onLogout }) {
               ref={textareaRef}
               value={input}
               onChange={handleChange}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
               placeholder="Preguntale a Michel Chion sobre su obra y conceptos…"
               rows={1}
               style={{
