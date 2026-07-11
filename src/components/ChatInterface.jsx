@@ -3,7 +3,7 @@ import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
 import {
   SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS,
-  WELCOME_MESSAGE, GEMINI_ENDPOINT
+  WELCOME_MESSAGE, GEMINI_ENDPOINT, GEMINI_MODELS
 } from "../data/chionPrompt";
 import { logInteraction, clearApiKey } from "../utils/storage";
 
@@ -12,6 +12,15 @@ const C = {
   border: "#2d2d2d", muted: "#666", text: "#e2e0d8", textDim: "#8a8880",
   amber: "#c47c30", amberDeep: "#7a441a", amberText: "#fde8c0",
 };
+
+// ── Modelo activo (se guarda en sessionStorage para no re-detectar) ───────────
+const MODEL_KEY = "chion_model";
+function getSavedModel() {
+  try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; }
+}
+function saveModel(m) {
+  try { sessionStorage.setItem(MODEL_KEY, m); } catch {}
+}
 
 function AudioBars() {
   return (
@@ -27,11 +36,81 @@ function AudioBars() {
   );
 }
 
+/**
+ * Intenta llamar a la API con cada modelo de GEMINI_MODELS hasta que uno responde 200.
+ * Guarda el modelo que funcionó en sessionStorage para no repetir la búsqueda.
+ */
+async function callGemini(apiKey, body) {
+  const saved = getSavedModel();
+  const models = saved
+    ? [saved, ...GEMINI_MODELS.filter(m => m !== saved)]
+    : GEMINI_MODELS;
+
+  let lastError = null;
+
+  for (const model of models) {
+    try {
+      const res = await fetch(GEMINI_ENDPOINT(apiKey, model), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+
+      if (res.status === 404) {
+        // Este modelo no existe en esta región — probar el siguiente
+        continue;
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg = data?.error?.message || "";
+        if (res.status === 400) throw new Error(msg || "Request inválido.");
+        if (res.status === 401 || res.status === 403) throw new Error(
+          `Key sin permisos (${res.status}). Usá el botón 🔑 para cambiar la key.`
+        );
+        if (res.status === 429) throw new Error(
+          "Límite de consultas alcanzado. Esperá unos segundos."
+        );
+        throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
+      }
+
+      // Funcionó — guardar el modelo para las próximas llamadas
+      saveModel(model);
+
+      const reply =
+        data?.candidates?.[0]?.content?.parts?.[0]?.text
+        ?? data?.candidates?.[0]?.output
+        ?? "";
+
+      if (!reply) throw new Error("La API respondió vacío. Intentá de nuevo.");
+      return reply;
+
+    } catch (err) {
+      // Si es un error de negocio (no 404), propagar inmediatamente
+      if (!err.message?.includes("next")) {
+        lastError = err;
+        if (err.message && !["Request inválido"].includes(err.message)) {
+          throw err;
+        }
+      }
+    }
+  }
+
+  // Todos los modelos dieron 404
+  throw new Error(
+    "Ningún modelo de Gemini está disponible con tu key. " +
+    "Verificá que creaste la key desde aistudio.google.com/app/apikey " +
+    "y que la API de Gemini esté habilitada en tu proyecto."
+  );
+}
+
 export default function ChatInterface({ apiKey, onLogout }) {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
   const [showPanel, setShowPanel] = useState(false);
+  const [activeModel, setActiveModel] = useState(getSavedModel() || "");
   const bottomRef = useRef(null);
   const textareaRef = useRef(null);
   const abortRef = useRef(false);
@@ -52,54 +131,45 @@ export default function ChatInterface({ apiKey, onLogout }) {
     setGenerating(true);
     abortRef.current = false;
 
-    // Placeholder vacío mientras espera
     setMessages((prev) => [...prev, { role: "model", content: "" }]);
 
     try {
-      // ── Construir historial para Gemini ─────────────────────────────────
-      // Gemini usa roles "user" / "model"
-      // Limitar a últimos 10 mensajes para no agotar tokens
+      // ── Construir historial ────────────────────────────────────────────────
+      // El system prompt va como primer turno user/model para máxima compatibilidad
+      // Esto funciona con TODOS los modelos de Gemini, incluyendo gemini-pro legacy
       const history = updated
-        .slice(1)     // omite el welcome (no es user)
-        .slice(-10)
+        .slice(1)    // excluye welcome
+        .slice(-10)  // últimos 10 mensajes
         .map(({ role, content }) => ({
           role,
           parts: [{ text: content }],
         }));
 
-      const body = {
-        system_instruction: {
-          parts: [{ text: SYSTEM_PROMPT }],
+      // Inyectar system prompt como contexto inicial si no está ya
+      const fullContents = [
+        {
+          role: "user",
+          parts: [{ text: `[Instrucciones del sistema — leelas y siguelas siempre]\n\n${SYSTEM_PROMPT}` }],
         },
-        contents: history,
+        {
+          role: "model",
+          parts: [{ text: "Entendido. Soy Michel Chion y responderé en primera persona, en español, sobre mi obra y el sonido cinematográfico exclusivamente." }],
+        },
+        ...history,
+      ];
+
+      const body = {
+        contents: fullContents,
         generationConfig: GENERATION_CONFIG,
       };
 
-      // ── Llamada a generateContent (sin streaming) ────────────────────────
-      const res = await fetch(GEMINI_ENDPOINT(apiKey), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const reply = await callGemini(apiKey, body);
 
-      // Leer el body una sola vez
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        const msg = data?.error?.message || "";
-        if (res.status === 400) throw new Error(msg || "Request inválido.");
-        if (res.status === 401) throw new Error("API key inválida. Usá el botón 🔑 del header para cambiarla.");
-        if (res.status === 403) throw new Error("Key sin permisos. Generá una nueva en aistudio.google.com/app/apikey y usá 🔑 para actualizarla.");
-        if (res.status === 404) throw new Error("API no disponible. Asegurate de crear la key desde aistudio.google.com/app/apikey (no desde Google Cloud Console).");
-        if (res.status === 429) throw new Error("Límite de consultas alcanzado. Esperá unos segundos y volvé a intentar.");
-        throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
+      // Actualizar el modelo activo en el header si cambió
+      const currentModel = getSavedModel();
+      if (currentModel && currentModel !== activeModel) {
+        setActiveModel(currentModel);
       }
-
-      // Extraer el texto de la respuesta
-      const reply =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text
-        ?? data?.candidates?.[0]?.output
-        ?? "No obtuve respuesta. Intentá de nuevo.";
 
       if (!abortRef.current) {
         setMessages((prev) => {
@@ -136,8 +206,9 @@ export default function ChatInterface({ apiKey, onLogout }) {
   };
 
   const handleLogout = () => {
-    if (!confirm("¿Eliminar tu API key guardada? Vas a tener que ingresarla de nuevo.")) return;
+    if (!confirm("¿Eliminar tu API key? Tendrás que ingresarla de nuevo.")) return;
     clearApiKey();
+    try { sessionStorage.removeItem(MODEL_KEY); } catch {}
     onLogout();
   };
 
@@ -167,7 +238,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 15, color: "#f0ece0" }}>Michel Chion</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-            Teórico · «La Audiovisión» · Gemini 1.5 Flash · $0
+            Teórico · «La Audiovisión» · {activeModel || "Gemini"} · $0
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
@@ -189,7 +260,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
             padding: "5px 12px", cursor: "pointer", fontFamily: "inherit",
           }}>Reiniciar</button>
           <button onClick={handleLogout} title="Cambiar API key" style={{
-            fontSize: 14, color: "#444", background: "transparent",
+            fontSize: 14, color: "#555", background: "transparent",
             border: "none", cursor: "pointer", padding: "5px 4px",
           }}>🔑</button>
         </div>
@@ -199,10 +270,8 @@ export default function ChatInterface({ apiKey, onLogout }) {
 
       {/* ── Mensajes ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "22px 14px 8px" }}>
-        <div style={{
-          maxWidth: 680, margin: "0 auto",
-          display: "flex", flexDirection: "column", gap: 16,
-        }}>
+        <div style={{ maxWidth: 680, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
+
           {messages.map((m, i) => (
             <div key={i} style={{
               display: "flex",
@@ -212,9 +281,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
               {m.role !== "user" && <Avatar size={30} />}
               <div style={{
                 maxWidth: "78%", padding: "11px 15px",
-                borderRadius: m.role === "user"
-                  ? "16px 16px 4px 16px"
-                  : "4px 16px 16px 16px",
+                borderRadius: m.role === "user" ? "16px 16px 4px 16px" : "4px 16px 16px 16px",
                 fontSize: 14, lineHeight: 1.75, whiteSpace: "pre-wrap",
                 background: m.role === "user" ? C.amberDeep : C.card,
                 color: m.role === "user" ? C.amberText : C.text,
@@ -227,7 +294,6 @@ export default function ChatInterface({ apiKey, onLogout }) {
             </div>
           ))}
 
-          {/* Sugerencias */}
           {showSuggestions && (
             <div style={{ marginTop: 4 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -245,14 +311,8 @@ export default function ChatInterface({ apiKey, onLogout }) {
                     padding: "9px 12px", color: C.textDim,
                     cursor: "pointer", lineHeight: 1.5, fontFamily: "inherit",
                   }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = C.amber;
-                    e.currentTarget.style.color = C.text;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = C.border;
-                    e.currentTarget.style.color = C.textDim;
-                  }}>
+                  onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.amber; e.currentTarget.style.color = C.text; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.color = C.textDim; }}>
                     {s}
                   </button>
                 ))}
@@ -275,10 +335,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
               value={input}
               onChange={handleChange}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  send();
-                }
+                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
               }}
               placeholder="Preguntale a Michel Chion sobre su obra y conceptos…"
               rows={1}

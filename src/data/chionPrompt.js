@@ -1,9 +1,14 @@
 // ─── Configuración Gemini ─────────────────────────────────────────────────────
-export const GEMINI_MODEL  = "gemini-1.5-flash";
+// Modelos en orden de disponibilidad — se prueban en secuencia
+export const GEMINI_MODELS = [
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-latest",
+  "gemini-1.0-pro",
+  "gemini-pro",
+];
 
-// Sin streaming — endpoint estándar, máxima compatibilidad
-export const GEMINI_ENDPOINT = (key) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${key}`;
+export const GEMINI_ENDPOINT = (key, model) =>
+  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
 export const GENERATION_CONFIG = {
   temperature: 0.4,
