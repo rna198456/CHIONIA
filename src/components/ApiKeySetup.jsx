@@ -21,7 +21,7 @@ const STEPS = [
   {
     num: "2",
     title: 'Hacé click en "Create API key"',
-    desc: 'En la página que se abre, buscá el botón azul "Create API key" y clickealo. Copiá la clave que empieza con "AIza...".',
+    desc: 'En la página que se abre, buscá el botón azul "Create API key". Seleccioná un proyecto o creá uno nuevo. Copiá la clave generada (empieza con "AIza" y tiene ~39 caracteres).',
     note: "El tier gratuito da 1.500 consultas/día y 1 millón de tokens/día — más que suficiente.",
   },
   {
@@ -38,8 +38,8 @@ export default function ApiKeySetup({ onReady }) {
 
   const handleSubmit = async () => {
     const trimmed = key.trim();
-    if (!trimmed.startsWith("AIza") || trimmed.length < 30) {
-      setError("Esa no parece una API key válida de Google. Debería empezar con \"AIza...\"");
+    if (trimmed.length < 20) {
+      setError("La clave parece demasiado corta. Copiala completa desde aistudio.google.com/app/apikey");
       return;
     }
     setTesting(true);
@@ -166,7 +166,7 @@ export default function ApiKeySetup({ onReady }) {
                       value={key}
                       onChange={(e) => { setKey(e.target.value); setError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
-                      placeholder="AIzaSy..."
+                      placeholder="AIzaSy... (39 caracteres aprox.)"
                       style={{
                         width: "100%", background: C.card, border: `1px solid ${C.border}`,
                         borderRadius: 8, padding: "10px 14px", fontSize: 13,
