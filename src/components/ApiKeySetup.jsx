@@ -22,7 +22,7 @@ const STEPS = [
     num: "2",
     title: 'Hacé click en "Create API key"',
     desc: 'En la página que se abre, click en el botón azul "Create API key" → seleccioná un proyecto → copiá la clave completa.',
-    note: 'La clave empieza con "AIza" y tiene aproximadamente 39 caracteres. Tier gratuito: 1.500 consultas/día.',
+    note: 'La clave empieza con "AQ." (nuevo formato Auth Key) o "AIza" (formato legacy). Tier gratuito: 1.500 consultas/día.',
   },
   {
     num: "3",
@@ -136,7 +136,7 @@ export default function ApiKeySetup({ onReady }) {
                       value={key}
                       onChange={(e) => { setKey(e.target.value); setError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
-                      placeholder="AIzaSy..."
+                      placeholder="AQ.Ab... o AIzaSy..."
                       autoComplete="off"
                       style={{
                         width: "100%", background: C.card,

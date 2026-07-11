@@ -36,72 +36,77 @@ function AudioBars() {
   );
 }
 
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
 /**
  * Intenta llamar a la API con cada modelo de GEMINI_MODELS hasta que uno responde 200.
+ * En caso de 429 (rate limit), reintenta automáticamente hasta 3 veces con espera creciente.
  * Guarda el modelo que funcionó en sessionStorage para no repetir la búsqueda.
  */
-async function callGemini(apiKey, body) {
+async function callGemini(apiKey, body, onRetryCountdown) {
   const saved = getSavedModel();
   const models = saved
     ? [saved, ...GEMINI_MODELS.filter(m => m !== saved)]
     : GEMINI_MODELS;
 
-  let lastError = null;
-
   for (const model of models) {
-    try {
-      const res = await fetch(GEMINI_ENDPOINT(apiKey, model), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+    // Reintentos automáticos para 429
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(GEMINI_ENDPOINT(apiKey, model), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
 
-      if (res.status === 404) {
-        // Este modelo no existe en esta región — probar el siguiente
-        continue;
-      }
+        if (res.status === 404) break; // modelo no existe — probar el siguiente
 
-      const data = await res.json().catch(() => ({}));
+        const data = await res.json().catch(() => ({}));
 
-      if (!res.ok) {
-        const msg = data?.error?.message || "";
-        if (res.status === 400) throw new Error(msg || "Request inválido.");
-        if (res.status === 401 || res.status === 403) throw new Error(
-          `Key sin permisos (${res.status}). Usá el botón 🔑 para cambiar la key.`
-        );
-        if (res.status === 429) throw new Error(
-          "Límite de consultas alcanzado. Esperá unos segundos."
-        );
-        throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
-      }
-
-      // Funcionó — guardar el modelo para las próximas llamadas
-      saveModel(model);
-
-      const reply =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text
-        ?? data?.candidates?.[0]?.output
-        ?? "";
-
-      if (!reply) throw new Error("La API respondió vacío. Intentá de nuevo.");
-      return reply;
-
-    } catch (err) {
-      // Si es un error de negocio (no 404), propagar inmediatamente
-      if (!err.message?.includes("next")) {
-        lastError = err;
-        if (err.message && !["Request inválido"].includes(err.message)) {
-          throw err;
+        if (res.status === 429) {
+          if (attempt < 2) {
+            // Esperar con countdown visible: 30s → 20s → 10s
+            const waitSecs = (3 - attempt) * 15;
+            for (let s = waitSecs; s > 0; s--) {
+              onRetryCountdown?.(`Límite de API alcanzado. Reintentando en ${s}s…`);
+              await sleep(1000);
+            }
+            onRetryCountdown?.(null);
+            continue; // reintentar
+          }
+          throw new Error("Límite de consultas alcanzado. Esperá 1 minuto antes de enviar otro mensaje.");
         }
+
+        if (!res.ok) {
+          const msg = data?.error?.message || "";
+          if (res.status === 400) throw new Error(msg || "Request inválido.");
+          if (res.status === 401 || res.status === 403) throw new Error(
+            `Key sin permisos (${res.status}). Usá el botón 🔑 para cambiar la key.`
+          );
+          throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
+        }
+
+        // ✅ Éxito
+        saveModel(model);
+
+        const reply =
+          data?.candidates?.[0]?.content?.parts?.[0]?.text
+          ?? data?.candidates?.[0]?.output
+          ?? "";
+
+        if (!reply) throw new Error("La API respondió vacío. Intentá de nuevo.");
+        return reply;
+
+      } catch (err) {
+        if (!err.message?.includes("Límite") && !err.message?.includes("reintent")) throw err;
+        if (attempt >= 2) throw err;
       }
     }
   }
 
-  // Todos los modelos dieron 404
   throw new Error(
     "Ningún modelo de Gemini está disponible con tu key. " +
-    "Verificá que creaste la key desde aistudio.google.com/app/apikey " +
-    "y que la API de Gemini esté habilitada en tu proyecto."
+    "Verificá que creaste la key desde aistudio.google.com/app/apikey."
   );
 }
 
@@ -109,6 +114,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [input, setInput] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [retryMsg, setRetryMsg] = useState(null);
   const [showPanel, setShowPanel] = useState(false);
   const [activeModel, setActiveModel] = useState(getSavedModel() || "");
   const bottomRef = useRef(null);
@@ -163,7 +169,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
         generationConfig: GENERATION_CONFIG,
       };
 
-      const reply = await callGemini(apiKey, body);
+      const reply = await callGemini(apiKey, body, (msg) => setRetryMsg(msg));
 
       // Actualizar el modelo activo en el header si cambió
       const currentModel = getSavedModel();
@@ -194,6 +200,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
       }
     } finally {
       setGenerating(false);
+      setRetryMsg(null);
     }
   };
 
@@ -288,7 +295,9 @@ export default function ChatInterface({ apiKey, onLogout }) {
                 border: m.role !== "user" ? `1px solid ${C.border}` : "none",
               }}>
                 {m.content === "" && generating && i === messages.length - 1
-                  ? <AudioBars />
+                  ? retryMsg
+                    ? <span style={{fontSize:12,color:"#c8c848"}}>{retryMsg}</span>
+                    : <AudioBars />
                   : m.content}
               </div>
             </div>
