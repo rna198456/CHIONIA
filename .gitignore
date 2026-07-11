@@ -1,23 +1,6 @@
-# Dependencias
 node_modules/
-
-# Build de Vite
 dist/
-
-# Sistema operativo
-.DS_Store
-Thumbs.db
-
-# Variables de entorno locales
 .env
 .env.local
-.env.*.local
-
-# Logs
+.DS_Store
 *.log
-npm-debug.log*
-
-# Editor
-.vscode/
-.idea/
-*.swp
