@@ -1,24 +1,23 @@
-// ─── Configuración Gemini ─────────────────────────────────────────────────────
-// Modelos en orden de disponibilidad — se prueban en secuencia
-export const GEMINI_MODELS = [
-  "gemini-2.5-flash",        // mejor calidad, razonamiento mejorado
-  "gemini-2.0-flash",        // rápido y gratuito
-  "gemini-2.0-flash-001",    // versión fija de 2.0
-  "gemini-2.0-flash-lite-001", // más liviano
-  "gemini-2.5-pro",          // máxima calidad (puede tener límite)
-  "gemini-1.5-flash",        // fallback legacy
-  "gemini-1.5-flash-latest",
-  "gemini-1.0-pro",
-  "gemini-pro",
+// ─── Configuración Groq ──────────────────────────────────────────────────────
+// Groq: 100% gratuito, sin tarjeta de crédito, 14.400 requests/día
+// Modelos disponibles en el free tier:
+//   llama-3.3-70b-versatile  → mejor calidad (recomendado)
+//   llama-3.1-70b-versatile  → fallback
+//   mixtral-8x7b-32768       → alternativa
+
+export const GROQ_MODELS = [
+  "llama-3.3-70b-versatile",
+  "llama-3.1-70b-versatile",
+  "mixtral-8x7b-32768",
 ];
 
-export const GEMINI_ENDPOINT = (key, model) =>
-  `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
+export const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
 export const GENERATION_CONFIG = {
   temperature: 0.4,
-  maxOutputTokens: 1200,
-  topP: 0.9,
+  max_tokens: 1200,
+  top_p: 0.9,
+  stream: true,
 };
 
 // ─── System Prompt basado en «La Audiovisión» (Paidós, 1993) ─────────────────
@@ -204,7 +203,7 @@ export const SUGGESTIONS = [
 ];
 
 export const WELCOME_MESSAGE = {
-  role: "model",
+  role: "assistant",
   content:
     "Bonjour... o, como prefieren aquí, buenas. Soy Michel Chion.\n\n" +
     "He dedicado décadas a escuchar el cine de una manera que quizás aún no has considerado del todo. " +
