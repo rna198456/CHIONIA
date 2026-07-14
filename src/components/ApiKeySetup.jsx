@@ -12,17 +12,17 @@ const C = {
 const STEPS = [
   {
     num: "1",
-    title: "Abrí Google AI Studio",
-    desc: "Es el portal gratuito de Google para usar sus modelos de IA.",
-    link: "https://aistudio.google.com/app/apikey",
-    linkLabel: "→ aistudio.google.com/app/apikey",
-    note: "Necesitás una cuenta de Gmail. No requiere tarjeta de crédito.",
+    title: "Creá una cuenta gratis en Groq",
+    desc: "Groq es una plataforma de IA que ofrece modelos de alta calidad de forma completamente gratuita. No requiere tarjeta de crédito.",
+    link: "https://console.groq.com",
+    linkLabel: "→ console.groq.com (click aquí)",
+    note: "Gratis para siempre · 14.400 requests/día · Sin tarjeta de crédito",
   },
   {
     num: "2",
-    title: 'Hacé click en "Create API key"',
-    desc: 'En la página que se abre, click en el botón azul "Create API key" → seleccioná un proyecto → copiá la clave completa.',
-    note: 'La clave empieza con "AQ." (nuevo formato Auth Key) o "AIza" (formato legacy). Tier gratuito: 1.500 consultas/día.',
+    title: 'Generá tu API key',
+    desc: 'Una vez dentro de la consola, andá al menú "API Keys" (barra lateral izquierda) → click en "Create API Key" → ponele cualquier nombre → copiá la clave.',
+    note: 'La clave empieza con "gsk_" y tiene ~56 caracteres.',
   },
   {
     num: "3",
@@ -35,16 +35,12 @@ export default function ApiKeySetup({ onReady }) {
   const [key, setKey] = useState("");
   const [error, setError] = useState("");
 
-  // Sin llamada de verificación previa — guarda directo.
-  // Si la key está mal, el primer mensaje del chat lo indica con error claro.
   const handleSubmit = () => {
     const trimmed = key.trim();
-
-    if (trimmed.length < 20) {
-      setError('La clave parece incompleta. Copiala completa desde aistudio.google.com/app/apikey');
+    if (!trimmed.startsWith("gsk_") || trimmed.length < 30) {
+      setError('La clave de Groq debe empezar con "gsk_" y tener ~56 caracteres. Copiala completa desde console.groq.com');
       return;
     }
-
     saveApiKey(trimmed);
     onReady(trimmed);
   };
@@ -58,7 +54,7 @@ export default function ApiKeySetup({ onReady }) {
       <div style={{ maxWidth: 520, width: "100%" }}>
 
         {/* Header */}
-        <div style={{ textAlign: "center", marginBottom: 28 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
           <div style={{ display: "flex", justifyContent: "center", marginBottom: 16 }}>
             <Avatar size={72} />
           </div>
@@ -66,16 +62,16 @@ export default function ApiKeySetup({ onReady }) {
             Michel Chion
           </h1>
           <p style={{ margin: 0, fontSize: 13, color: C.muted }}>
-            Chatbot académico · Gratuito · Sin servidor
+            Chatbot académico · Groq AI · Gratuito · Sin servidor
           </p>
         </div>
 
         {/* Badges */}
         <div style={{ display: "flex", gap: 8, marginBottom: 24, flexWrap: "wrap", justifyContent: "center" }}>
           {[
-            { icon: "💸", label: "$0 para vos" },
-            { icon: "🔒", label: "Key solo en tu navegador" },
-            { icon: "⚡", label: "Respuestas en ~2 seg" },
+            { icon: "💸", label: "$0 — sin tarjeta" },
+            { icon: "⚡", label: "~1 seg por respuesta" },
+            { icon: "📊", label: "14.400 req/día" },
             { icon: "📱", label: "Cualquier dispositivo" },
           ].map((b, i) => (
             <div key={i} style={{
@@ -95,12 +91,11 @@ export default function ApiKeySetup({ onReady }) {
               background: C.surface, border: `1px solid ${C.border}`,
               borderRadius: 12, padding: "14px 16px", display: "flex", gap: 14,
             }}>
-              {/* Número */}
               <div style={{
                 width: 28, height: 28, borderRadius: "50%", flexShrink: 0,
                 background: C.amberDeep, border: `1.5px solid ${C.amber}`,
                 display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 12, fontWeight: 700, color: C.amberText,
+                fontSize: 12, fontWeight: 700, color: C.amberText, marginTop: 2,
               }}>{s.num}</div>
 
               <div style={{ flex: 1 }}>
@@ -112,7 +107,7 @@ export default function ApiKeySetup({ onReady }) {
                 {s.link && (
                   <a href={s.link} target="_blank" rel="noopener noreferrer" style={{
                     display: "inline-block", marginTop: 8, fontSize: 12,
-                    color: C.amber, textDecoration: "none", fontWeight: 500,
+                    color: C.amber, textDecoration: "none", fontWeight: 600,
                   }}>
                     {s.linkLabel}
                   </a>
@@ -120,15 +115,14 @@ export default function ApiKeySetup({ onReady }) {
 
                 {s.note && (
                   <div style={{
-                    marginTop: 8, fontSize: 11, color: "#666",
-                    background: C.card, borderRadius: 6, padding: "5px 10px",
-                    border: `1px solid ${C.border}`,
+                    marginTop: 8, fontSize: 11, color: "#4ade80",
+                    background: "#052e16", borderRadius: 6, padding: "5px 10px",
+                    border: "1px solid #166534",
                   }}>
-                    {s.note}
+                    ✓ {s.note}
                   </div>
                 )}
 
-                {/* Input — solo en paso 3 */}
                 {i === 2 && (
                   <div style={{ marginTop: 12 }}>
                     <input
@@ -136,7 +130,7 @@ export default function ApiKeySetup({ onReady }) {
                       value={key}
                       onChange={(e) => { setKey(e.target.value); setError(""); }}
                       onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(); }}
-                      placeholder="AQ.Ab... o AIzaSy..."
+                      placeholder="gsk_..."
                       autoComplete="off"
                       style={{
                         width: "100%", background: C.card,
@@ -148,13 +142,11 @@ export default function ApiKeySetup({ onReady }) {
                       onFocus={(e) => e.target.style.borderColor = C.amber}
                       onBlur={(e) => e.target.style.borderColor = error ? C.red : C.border}
                     />
-
                     {error && (
                       <div style={{ marginTop: 8, fontSize: 12, color: C.red, lineHeight: 1.5 }}>
                         ⚠ {error}
                       </div>
                     )}
-
                     <button
                       onClick={handleSubmit}
                       disabled={!key.trim()}

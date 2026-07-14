@@ -3,7 +3,7 @@ import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
 import {
   SYSTEM_PROMPT, GENERATION_CONFIG, SUGGESTIONS,
-  WELCOME_MESSAGE, GEMINI_ENDPOINT, GEMINI_MODELS
+  WELCOME_MESSAGE, GROQ_ENDPOINT, GROQ_MODELS
 } from "../data/chionPrompt";
 import { logInteraction, clearApiKey } from "../utils/storage";
 
@@ -13,14 +13,10 @@ const C = {
   amber: "#c47c30", amberDeep: "#7a441a", amberText: "#fde8c0",
 };
 
-// ── Modelo activo (se guarda en sessionStorage para no re-detectar) ───────────
+// Modelo activo guardado en sessionStorage
 const MODEL_KEY = "chion_model";
-function getSavedModel() {
-  try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; }
-}
-function saveModel(m) {
-  try { sessionStorage.setItem(MODEL_KEY, m); } catch {}
-}
+const getSavedModel = () => { try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; } };
+const saveModel    = (m) => { try { sessionStorage.setItem(MODEL_KEY, m); } catch {} };
 
 function AudioBars() {
   return (
@@ -36,90 +32,91 @@ function AudioBars() {
   );
 }
 
-const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-
 /**
- * Intenta llamar a la API con cada modelo de GEMINI_MODELS hasta que uno responde 200.
- * En caso de 429 (rate limit), reintenta automáticamente hasta 3 veces con espera creciente.
- * Guarda el modelo que funcionó en sessionStorage para no repetir la búsqueda.
+ * Llama a Groq con streaming SSE (formato OpenAI-compatible).
+ * Prueba modelos en orden hasta que uno responde 200.
+ * onToken(str): callback llamado con cada token nuevo.
  */
-async function callGemini(apiKey, body, onRetryCountdown) {
+async function callGroq(apiKey, messages, onToken) {
   const saved = getSavedModel();
   const models = saved
-    ? [saved, ...GEMINI_MODELS.filter(m => m !== saved)]
-    : GEMINI_MODELS;
+    ? [saved, ...GROQ_MODELS.filter(m => m !== saved)]
+    : GROQ_MODELS;
 
   for (const model of models) {
-    // Reintentos automáticos para 429
-    for (let attempt = 0; attempt < 3; attempt++) {
-      try {
-        const res = await fetch(GEMINI_ENDPOINT(apiKey, model), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
+    const res = await fetch(GROQ_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        temperature:  GENERATION_CONFIG.temperature,
+        max_tokens:   GENERATION_CONFIG.max_tokens,
+        top_p:        GENERATION_CONFIG.top_p,
+        stream:       true,
+      }),
+    });
 
-        if (res.status === 404) break; // modelo no existe — probar el siguiente
+    if (res.status === 404) continue; // modelo no disponible — probar el siguiente
 
-        const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const msg = data?.error?.message || "";
+      if (res.status === 401) throw new Error("API key inválida. Usá el botón 🔑 para cambiarla.");
+      if (res.status === 403) throw new Error("Key sin permisos. Verificá en console.groq.com");
+      if (res.status === 429) throw new Error("Límite de requests alcanzado. Esperá un minuto.");
+      throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
+    }
 
-        if (res.status === 429) {
-          if (attempt < 2) {
-            // Esperar con countdown visible: 30s → 20s → 10s
-            const waitSecs = (3 - attempt) * 15;
-            for (let s = waitSecs; s > 0; s--) {
-              onRetryCountdown?.(`Límite de API alcanzado. Reintentando en ${s}s…`);
-              await sleep(1000);
-            }
-            onRetryCountdown?.(null);
-            continue; // reintentar
+    // ── Leer stream SSE (formato OpenAI) ────────────────────────────────
+    saveModel(model);
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let full   = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const json = line.slice(6).trim();
+        if (json === "[DONE]") break;
+        try {
+          const chunk = JSON.parse(json);
+          const delta = chunk?.choices?.[0]?.delta?.content ?? "";
+          if (delta) {
+            full += delta;
+            onToken(delta, full);
           }
-          throw new Error("Límite de consultas alcanzado. Esperá 1 minuto antes de enviar otro mensaje.");
-        }
-
-        if (!res.ok) {
-          const msg = data?.error?.message || "";
-          if (res.status === 400) throw new Error(msg || "Request inválido.");
-          if (res.status === 401 || res.status === 403) throw new Error(
-            `Key sin permisos (${res.status}). Usá el botón 🔑 para cambiar la key.`
-          );
-          throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
-        }
-
-        // ✅ Éxito
-        saveModel(model);
-
-        const reply =
-          data?.candidates?.[0]?.content?.parts?.[0]?.text
-          ?? data?.candidates?.[0]?.output
-          ?? "";
-
-        if (!reply) throw new Error("La API respondió vacío. Intentá de nuevo.");
-        return reply;
-
-      } catch (err) {
-        if (!err.message?.includes("Límite") && !err.message?.includes("reintent")) throw err;
-        if (attempt >= 2) throw err;
+        } catch { /* chunk mal formado */ }
       }
     }
+
+    if (!full) throw new Error("La API respondió vacío. Intentá de nuevo.");
+    return full;
   }
 
-  throw new Error(
-    "Ningún modelo de Gemini está disponible con tu key. " +
-    "Verificá que creaste la key desde aistudio.google.com/app/apikey."
-  );
+  throw new Error("Ningún modelo de Groq está disponible. Verificá tu key en console.groq.com");
 }
 
 export default function ChatInterface({ apiKey, onLogout }) {
-  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
-  const [input, setInput] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [retryMsg, setRetryMsg] = useState(null);
-  const [showPanel, setShowPanel] = useState(false);
-  const [activeModel, setActiveModel] = useState(getSavedModel() || "");
-  const bottomRef = useRef(null);
+  const [messages,    setMessages]  = useState([WELCOME_MESSAGE]);
+  const [input,       setInput]     = useState("");
+  const [generating,  setGenerating] = useState(false);
+  const [showPanel,   setShowPanel]  = useState(false);
+  const [activeModel, setActiveModel]= useState(getSavedModel() || "");
+  const bottomRef   = useRef(null);
   const textareaRef = useRef(null);
-  const abortRef = useRef(false);
+  const abortRef    = useRef(false);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -137,62 +134,46 @@ export default function ChatInterface({ apiKey, onLogout }) {
     setGenerating(true);
     abortRef.current = false;
 
-    setMessages((prev) => [...prev, { role: "model", content: "" }]);
+    // Placeholder vacío
+    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
 
     try {
-      // ── Construir historial ────────────────────────────────────────────────
-      // El system prompt va como primer turno user/model para máxima compatibilidad
-      // Esto funciona con TODOS los modelos de Gemini, incluyendo gemini-pro legacy
+      // Historial para Groq — formato OpenAI con roles user/assistant
       const history = updated
         .slice(1)    // excluye welcome
         .slice(-10)  // últimos 10 mensajes
         .map(({ role, content }) => ({
-          role,
-          parts: [{ text: content }],
+          // Gemini usa "model", OpenAI/Groq usa "assistant"
+          role: role === "model" ? "assistant" : role,
+          content,
         }));
 
-      // Inyectar system prompt como contexto inicial si no está ya
-      const fullContents = [
-        {
-          role: "user",
-          parts: [{ text: `[Instrucciones del sistema — leelas y siguelas siempre]\n\n${SYSTEM_PROMPT}` }],
-        },
-        {
-          role: "model",
-          parts: [{ text: "Entendido. Soy Michel Chion y responderé en primera persona, en español, sobre mi obra y el sonido cinematográfico exclusivamente." }],
-        },
+      const apiMessages = [
+        { role: "system", content: SYSTEM_PROMPT },
         ...history,
       ];
 
-      const body = {
-        contents: fullContents,
-        generationConfig: GENERATION_CONFIG,
-      };
-
-      const reply = await callGemini(apiKey, body, (msg) => setRetryMsg(msg));
-
-      // Actualizar el modelo activo en el header si cambió
-      const currentModel = getSavedModel();
-      if (currentModel && currentModel !== activeModel) {
-        setActiveModel(currentModel);
-      }
-
-      if (!abortRef.current) {
+      const reply = await callGroq(apiKey, apiMessages, (delta, full) => {
+        if (abortRef.current) return;
         setMessages((prev) => {
           const next = [...prev];
-          next[next.length - 1] = { role: "model", content: reply };
+          next[next.length - 1] = { role: "assistant", content: full };
           return next;
         });
-        logInteraction(txt, reply);
-      }
+      });
+
+      const currentModel = getSavedModel();
+      if (currentModel && currentModel !== activeModel) setActiveModel(currentModel);
+
+      if (!abortRef.current) logInteraction(txt, reply);
 
     } catch (err) {
       if (!abortRef.current) {
-        console.error("[Gemini]", err);
+        console.error("[Groq]", err);
         setMessages((prev) => {
           const next = [...prev];
           next[next.length - 1] = {
-            role: "model",
+            role: "assistant",
             content: `⚠ ${err.message || "Error al conectar con la API."}`,
           };
           return next;
@@ -200,7 +181,6 @@ export default function ChatInterface({ apiKey, onLogout }) {
       }
     } finally {
       setGenerating(false);
-      setRetryMsg(null);
     }
   };
 
@@ -213,7 +193,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
   };
 
   const handleLogout = () => {
-    if (!confirm("¿Eliminar tu API key? Tendrás que ingresarla de nuevo.")) return;
+    if (!confirm("¿Eliminar tu API key? Vas a tener que ingresarla de nuevo.")) return;
     clearApiKey();
     try { sessionStorage.removeItem(MODEL_KEY); } catch {}
     onLogout();
@@ -245,15 +225,12 @@ export default function ChatInterface({ apiKey, onLogout }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 15, color: "#f0ece0" }}>Michel Chion</div>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>
-            Teórico · «La Audiovisión» · {activeModel || "Gemini"} · $0
+            Teórico · «La Audiovisión» · {activeModel || "Groq AI"} · $0
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{
-              width: 7, height: 7, borderRadius: "50%", background: "#4ade80",
-              display: "inline-block", boxShadow: "0 0 6px #4ade8080",
-            }} />
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "#4ade80", display: "inline-block", boxShadow: "0 0 6px #4ade8080" }} />
             <span style={{ fontSize: 11, color: C.muted }}>Conectado</span>
           </div>
           <button onClick={() => setShowPanel(true)} style={{
@@ -293,11 +270,11 @@ export default function ChatInterface({ apiKey, onLogout }) {
                 background: m.role === "user" ? C.amberDeep : C.card,
                 color: m.role === "user" ? C.amberText : C.text,
                 border: m.role !== "user" ? `1px solid ${C.border}` : "none",
+                ...(generating && i === messages.length - 1 && m.role !== "user" && m.content
+                  ? { borderRight: `2px solid ${C.amber}` } : {}),
               }}>
                 {m.content === "" && generating && i === messages.length - 1
-                  ? retryMsg
-                    ? <span style={{fontSize:12,color:"#c8c848"}}>{retryMsg}</span>
-                    : <AudioBars />
+                  ? <AudioBars />
                   : m.content}
               </div>
             </div>
@@ -343,9 +320,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
               ref={textareaRef}
               value={input}
               onChange={handleChange}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
-              }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
               placeholder="Preguntale a Michel Chion sobre su obra y conceptos…"
               rows={1}
               style={{
