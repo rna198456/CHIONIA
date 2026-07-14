@@ -1,5 +1,5 @@
 // ─── API Key ──────────────────────────────────────────────────────────────────
-const KEY_STORAGE = "chion_gemini_key";
+const KEY_STORAGE = "chion_api_key";
 
 export function saveApiKey(key) {
   try { localStorage.setItem(KEY_STORAGE, key.trim()); } catch {}
