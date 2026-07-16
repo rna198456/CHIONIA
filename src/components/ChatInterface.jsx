@@ -6,6 +6,7 @@ import {
   WELCOME_MESSAGE, GROQ_ENDPOINT, GROQ_MODELS
 } from "../data/chionPrompt";
 import { logInteraction, clearApiKey } from "../utils/storage";
+import { sendToRemoteLog } from "../utils/remoteLog";
 
 const C = {
   bg: "#0e0e0e", surface: "#161616", card: "#202020",
@@ -165,7 +166,10 @@ export default function ChatInterface({ apiKey, onLogout }) {
       const currentModel = getSavedModel();
       if (currentModel && currentModel !== activeModel) setActiveModel(currentModel);
 
-      if (!abortRef.current) logInteraction(txt, reply);
+      if (!abortRef.current) {
+        logInteraction(txt, reply);
+        sendToRemoteLog(txt, reply, getSavedModel());
+      }
 
     } catch (err) {
       if (!abortRef.current) {

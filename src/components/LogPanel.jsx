@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { getLog, clearLog, exportCSV } from "../utils/storage";
+import { SHEETS_ENDPOINT } from "../data/chionPrompt";
 
 const C = {
   surface: "#161616", card: "#1e1e1e", border: "#2a2a2a",
@@ -61,6 +62,35 @@ export default function LogPanel({ onClose }) {
             fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center",
           }}>✕</button>
         </div>
+
+        {/* Banner docente */}
+        {SHEETS_ENDPOINT ? (
+          <div style={{
+            padding: "10px 20px", borderBottom: `1px solid ${C.border}`,
+            background: "#052e16", display: "flex", alignItems: "center",
+            justifyContent: "space-between", gap: 12, flexShrink: 0,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 14 }}>📡</span>
+              <span style={{ fontSize: 12, color: "#4ade80" }}>
+                Registro remoto activo — las consultas de todos los alumnos se guardan en Google Sheets
+              </span>
+            </div>
+            <span style={{ fontSize: 11, color: "#166534", whiteSpace: "nowrap" }}>Solo visible para el docente</span>
+          </div>
+        ) : (
+          <div style={{
+            padding: "10px 20px", borderBottom: `1px solid ${C.border}`,
+            background: "#1a1008", display: "flex", alignItems: "center",
+            gap: 8, flexShrink: 0,
+          }}>
+            <span style={{ fontSize: 13 }}>⚠</span>
+            <span style={{ fontSize: 12, color: "#c8c848" }}>
+              Registro docente no configurado — los alumnos solo ven su propio historial local.
+              Para activarlo: pegá la URL del Apps Script en <code style={{background:"#111",padding:"1px 5px",borderRadius:3}}>SHEETS_ENDPOINT</code> en <code style={{background:"#111",padding:"1px 5px",borderRadius:3}}>chionPrompt.js</code>
+            </span>
+          </div>
+        )}
 
         {/* Stats */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
