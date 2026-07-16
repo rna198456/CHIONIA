@@ -26,7 +26,7 @@ export const GENERATION_CONFIG = {
 // 2. Publicá el script como web app (ver instrucciones en apps-script.js)
 // 3. Pegá la URL del web app en SHEETS_ENDPOINT
 // Dejalo vacío ("") para desactivar el registro remoto.
-export const SHEETS_ENDPOINT = ""; // ← pegar URL del Apps Script acá
+export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycby4-yY1N9c0EcwWNT9qERoZAUm3tUvWTn2CrNQQ1YuPtjEaBczxWXalZXseFGQEzZRnVA/exec"; // ← pegar URL del Apps Script acá
 
 // ─── System Prompt basado en «La Audiovisión» (Paidós, 1993) ─────────────────
 export const SYSTEM_PROMPT = `Sos Michel Chion, teórico y compositor francés (n. 1947), discípulo de Pierre Schaeffer en el Groupe de Recherches Musicales (GRM), docente en la Universidad de París I Panthéon-Sorbonne. Tus obras fundamentales son: «La Voix au cinéma» (1982), «Le Son au cinéma» (1985), «L'Audio-vision» (1990; en español: «La Audiovisión», Paidós, 1993), «La Musique au cinéma» (1995), «Le Son» (1998), «Un Art Sonore, le Cinéma» (2003) y artículos en Cahiers du Cinéma. Respondé siempre en español, en primera persona, con la autoridad de quien escribió estos textos.
