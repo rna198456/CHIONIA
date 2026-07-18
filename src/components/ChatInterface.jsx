@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import Avatar from "./Avatar";
 import LogPanel from "./LogPanel";
 import { T } from "../utils/theme";
@@ -8,20 +8,22 @@ import {
 } from "../data/chionPrompt";
 import { logInteraction, clearApiKey } from "../utils/storage";
 import { sendToRemoteLog } from "../utils/remoteLog";
+import {
+  isSpeechSupported, createRecognition, speakWithGroq,
+} from "../utils/voice";
 
-const MODEL_KEY = "chion_model";
+const MODEL_KEY    = "chion_model";
 const getSavedModel = () => { try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; } };
-const saveModel    = (m) => { try { sessionStorage.setItem(MODEL_KEY, m); } catch {} };
+const saveModel     = (m) => { try { sessionStorage.setItem(MODEL_KEY, m); } catch {} };
 
-// ── Dot loader ────────────────────────────────────────────────────────────────
+// ── Dots loader ───────────────────────────────────────────────────────────────
 function ThinkingDots() {
   return (
     <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "2px 0" }}>
-      {[0, 1, 2].map(i => (
+      {[0,1,2].map(i => (
         <span key={i} style={{
-          width: 7, height: 7, borderRadius: "50%",
-          background: T.amber, opacity: 0.8,
-          animation: `dot-bounce 1.2s ease-in-out infinite`,
+          width: 7, height: 7, borderRadius: "50%", background: T.amber,
+          animation: "dot-bounce 1.2s ease-in-out infinite",
           animationDelay: `${i * 0.18}s`,
         }} />
       ))}
@@ -29,14 +31,14 @@ function ThinkingDots() {
   );
 }
 
-// ── Groq call ────────────────────────────────────────────────────────────────
+// ── Groq chat ─────────────────────────────────────────────────────────────────
 async function callGroq(apiKey, messages) {
   const saved  = getSavedModel();
   const models = saved ? [saved, ...GROQ_MODELS.filter(m => m !== saved)] : GROQ_MODELS;
 
   for (const model of models) {
     const res = await fetch(GROQ_ENDPOINT, {
-      method: "POST",
+      method:  "POST",
       headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
         model,
@@ -49,7 +51,6 @@ async function callGroq(apiKey, messages) {
     });
 
     if (res.status === 404) continue;
-
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       const msg = data?.error?.message || "";
@@ -57,7 +58,6 @@ async function callGroq(apiKey, messages) {
       if (res.status === 429) throw new Error("Límite de requests alcanzado. Esperá un minuto.");
       throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
     }
-
     saveModel(model);
     const reply = data?.choices?.[0]?.message?.content ?? "";
     if (!reply) throw new Error("Respuesta vacía. Intentá de nuevo.");
@@ -66,33 +66,50 @@ async function callGroq(apiKey, messages) {
   throw new Error("Ningún modelo disponible. Verificá tu key en console.groq.com");
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Componente principal ──────────────────────────────────────────────────────
 export default function ChatInterface({ apiKey, onLogout }) {
-  const DEFAULT_MODE  = MODES[0];
+  const DEFAULT_MODE = MODES[0];
+
+  // Chat state
   const [activeMode,  setActiveMode]  = useState(DEFAULT_MODE);
   const [messages,    setMessages]    = useState([WELCOME_MESSAGE]);
   const [input,       setInput]       = useState("");
   const [generating,  setGenerating]  = useState(false);
   const [showPanel,   setShowPanel]   = useState(false);
   const [activeModel, setActiveModel] = useState(getSavedModel() || "");
-  const bottomRef   = useRef(null);
-  const textareaRef = useRef(null);
-  const abortRef    = useRef(false);
+
+  // Voice state
+  const [voiceMode,    setVoiceMode]    = useState(false);
+  const [isListening,  setIsListening]  = useState(false);
+  const [isSpeaking,   setIsSpeaking]   = useState(false);
+  const [transcript,   setTranscript]   = useState(""); // texto interim
+  const [voiceError,   setVoiceError]   = useState("");
+
+  // Refs
+  const bottomRef    = useRef(null);
+  const textareaRef  = useRef(null);
+  const abortRef     = useRef(false);
+  const recognRef    = useRef(null);   // instancia SpeechRecognition
+  const audioRef     = useRef(null);   // instancia Audio (TTS)
+
+  const speechOk = isSpeechSupported();
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // ── Exportar conversación completa como TXT ──────────────────────────────
+  // Limpiar recursos al desmontar
+  useEffect(() => () => {
+    recognRef.current?.stop();
+    audioRef.current?.pause();
+  }, []);
+
+  // ── Exportar conversación ────────────────────────────────────────────────
   const exportConversation = () => {
     const lines = [
       "CHIONIA — Conversación con Michel Chion",
       `Fecha: ${new Date().toLocaleString("es-AR")}`,
       `Modo: ${activeMode.label}`,
-      "─".repeat(60),
-      "",
-      ...messages.map(m => {
-        const rol = m.role === "user" ? "ALUMNO" : "MICHEL CHION";
-        return `[${rol}]\n${m.content}\n`;
-      }),
+      "─".repeat(60), "",
+      ...messages.map(m => `[${m.role === "user" ? "ALUMNO" : "MICHEL CHION"}]\n${m.content}\n`),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
     const url  = URL.createObjectURL(blob);
@@ -103,28 +120,30 @@ export default function ChatInterface({ apiKey, onLogout }) {
     URL.revokeObjectURL(url);
   };
 
-  // ── Cambio de modo ───────────────────────────────────────────────────────
-  const handleModeChange = (mode) => {
-    if (mode.id === activeMode.id) return;
-    setActiveMode(mode);
-    setInput("");
-    abortRef.current = true;
-    setGenerating(false);
-    const welcomes = {
-      consulta:    WELCOME_MESSAGE,
-      analisis:    { role: "assistant", content: "Decime qué película y qué escena estás mirando. Cuanto más describís lo que ves y escuchás, más preciso puedo ser en el análisis." },
-      socratico:   { role: "assistant", content: "Bien. Pero aviso: no voy a darte las respuestas directamente. Voy a preguntarte.\n\n¿Sobre qué concepto o escena querés trabajar?" },
-      ocultadores: { role: "assistant", content: "Vamos a analizar una escena juntos, siguiendo el método del capítulo 10 de mi libro.\n\nPaso 1 de 6 — ¿Qué película y qué escena vas a analizar? Tenela disponible para ver mientras trabajamos." },
-    };
-    setMessages([welcomes[mode.id] || WELCOME_MESSAGE]);
-    if (textareaRef.current) textareaRef.current.style.height = "46px";
+  // ── Hablar con TTS ───────────────────────────────────────────────────────
+  const speak = useCallback(async (text) => {
+    if (!voiceMode) return;
+    audioRef.current?.pause();
+    audioRef.current = await speakWithGroq(text, apiKey, {
+      onStart: () => setIsSpeaking(true),
+      onEnd:   () => setIsSpeaking(false),
+    });
+  }, [voiceMode, apiKey]);
+
+  // ── Detener audio ────────────────────────────────────────────────────────
+  const stopAudio = () => {
+    audioRef.current?.pause();
+    audioRef.current = null;
+    setIsSpeaking(false);
   };
 
   // ── Enviar mensaje ───────────────────────────────────────────────────────
-  const send = async (override) => {
+  const send = useCallback(async (override) => {
     const txt = (override ?? input).trim();
     if (!txt || generating) return;
 
+    stopAudio();
+    setTranscript("");
     const userMsg = { role: "user", content: txt };
     const updated = [...messages, userMsg];
     setMessages(updated);
@@ -154,6 +173,8 @@ export default function ChatInterface({ apiKey, onLogout }) {
         });
         logInteraction(txt, reply);
         sendToRemoteLog(txt, reply, model);
+        // Leer la respuesta automáticamente si el modo voz está activo
+        speak(reply);
       }
     } catch (err) {
       if (!abortRef.current) {
@@ -166,13 +187,95 @@ export default function ChatInterface({ apiKey, onLogout }) {
     } finally {
       setGenerating(false);
     }
+  }, [input, generating, messages, activeMode, apiKey, activeModel, speak]);
+
+  // ── Micrófono: toggle ────────────────────────────────────────────────────
+  const toggleMic = () => {
+    if (isListening) {
+      recognRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    setVoiceError("");
+    const recognition = createRecognition();
+    if (!recognition) {
+      setVoiceError("Tu navegador no soporta reconocimiento de voz. Usá Chrome o Edge.");
+      return;
+    }
+
+    // Acumula el transcript
+    let finalText = "";
+    recognition.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
+        else interim += e.results[i][0].transcript;
+      }
+      setTranscript(finalText + interim);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      if (finalText.trim()) {
+        setTranscript("");
+        send(finalText.trim());
+      }
+    };
+
+    recognition.onerror = (e) => {
+      setIsListening(false);
+      if (e.error !== "aborted") {
+        setVoiceError(
+          e.error === "not-allowed"
+            ? "Permiso de micrófono denegado. Habilitalo en la configuración del navegador."
+            : `Error de micrófono: ${e.error}`
+        );
+      }
+    };
+
+    recognRef.current = recognition;
+    recognition.start();
+    setIsListening(true);
   };
 
-  const reset = () => { abortRef.current = true; handleModeChange(activeMode); setGenerating(false); };
+  // ── Cambio de modo ───────────────────────────────────────────────────────
+  const handleModeChange = (mode) => {
+    if (mode.id === activeMode.id) return;
+    stopAudio();
+    recognRef.current?.stop();
+    setIsListening(false);
+    setTranscript("");
+    setActiveMode(mode);
+    setInput("");
+    abortRef.current = true;
+    setGenerating(false);
+    const welcomes = {
+      consulta:    WELCOME_MESSAGE,
+      analisis:    { role: "assistant", content: "Decime qué película y qué escena estás mirando. Cuanto más describís lo que ves y escuchás, más preciso puedo ser en el análisis." },
+      socratico:   { role: "assistant", content: "Bien. Pero aviso: no voy a darte las respuestas directamente. Voy a preguntarte.\n\n¿Sobre qué concepto o escena querés trabajar?" },
+      ocultadores: { role: "assistant", content: "Vamos a analizar una escena juntos, siguiendo el método del capítulo 10 de mi libro.\n\nPaso 1 de 6 — ¿Qué película y qué escena vas a analizar? Tenela disponible para ver mientras trabajamos." },
+    };
+    setMessages([welcomes[mode.id] || WELCOME_MESSAGE]);
+    if (textareaRef.current) textareaRef.current.style.height = "46px";
+  };
+
+  // ── Toggle modo voz ───────────────────────────────────────────────────────
+  const toggleVoiceMode = () => {
+    if (voiceMode) {
+      stopAudio();
+      recognRef.current?.stop();
+      setIsListening(false);
+      setTranscript("");
+    }
+    setVoiceMode(v => !v);
+    setVoiceError("");
+  };
+
+  const reset = () => { stopAudio(); recognRef.current?.stop(); setIsListening(false); setTranscript(""); abortRef.current = true; handleModeChange(activeMode); setGenerating(false); };
   const handleLogout = () => {
     if (!confirm("¿Eliminar tu API key?")) return;
-    clearApiKey();
-    try { sessionStorage.removeItem(MODEL_KEY); } catch {}
+    clearApiKey(); try { sessionStorage.removeItem(MODEL_KEY); } catch {}
     onLogout();
   };
   const handleChange = (e) => {
@@ -188,7 +291,6 @@ export default function ChatInterface({ apiKey, onLogout }) {
     socratico:   "Escribí lo que querés explorar…",
     ocultadores: "Respondé para continuar con el siguiente paso…",
   };
-
   const showSuggestions = messages.length === 1 && !generating && activeMode.id === "consulta";
 
   return (
@@ -210,17 +312,31 @@ export default function ChatInterface({ apiKey, onLogout }) {
             Michel Chion
           </div>
           <div style={{ fontSize: 11, color: T.textMuted, marginTop: 1 }}>
-            {activeModel ? activeModel : "Groq AI"} · {activeMode.label}
+            {activeModel || "Groq AI"} · {activeMode.label}
           </div>
         </div>
 
-        {/* Acciones del header */}
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          {/* Indicador online */}
-          <div style={{ display: "flex", alignItems: "center", gap: 4, marginRight: 4 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, marginRight: 2 }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", display: "block" }} />
             <span style={{ fontSize: 11, color: T.textMuted }}>En línea</span>
           </div>
+
+          {/* Toggle voz */}
+          {speechOk && (
+            <button onClick={toggleVoiceMode} title={voiceMode ? "Volver a modo texto" : "Activar modo voz"} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              padding: "0 12px", height: 32, borderRadius: T.radiusMd,
+              border: `1px solid ${voiceMode ? T.amber : T.borderSub}`,
+              background: voiceMode ? T.amberBg : T.bgCard,
+              color: voiceMode ? T.amber : T.textSec,
+              fontSize: 12, fontWeight: voiceMode ? 600 : 400,
+              cursor: "pointer", fontFamily: T.fontBase, transition: T.transition,
+            }}>
+              <span style={{ fontSize: 14 }}>🎙</span>
+              {voiceMode ? "Voz activa" : "Voz"}
+            </button>
+          )}
 
           {[
             { label: "Exportar", icon: "⬇", onClick: exportConversation, title: "Descargar conversación completa" },
@@ -270,8 +386,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
               fontFamily: T.fontBase, cursor: "pointer",
               border: `1px solid ${isActive ? mode.border : "transparent"}`,
               background: isActive ? mode.bg : "transparent",
-              color: isActive ? mode.color : T.textSec,
-              transition: T.transition,
+              color: isActive ? mode.color : T.textSec, transition: T.transition,
             }}
             onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = T.bgCard; e.currentTarget.style.color = T.textPrim; }}}
             onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.textSec; }}}>
@@ -285,22 +400,18 @@ export default function ChatInterface({ apiKey, onLogout }) {
       <div style={{ flex: 1, overflowY: "auto", padding: "20px 20px 0" }}>
         <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
 
-          {/* Indicador de modo activo */}
           {activeMode.id !== "consulta" && (
             <div style={{
-              alignSelf: "center", padding: "5px 14px",
-              borderRadius: T.radiusFull,
-              border: `1px solid ${activeMode.border}`,
-              background: activeMode.bg,
+              alignSelf: "center", padding: "5px 14px", borderRadius: T.radiusFull,
+              border: `1px solid ${activeMode.border}`, background: activeMode.bg,
               fontSize: 11, color: activeMode.color, fontWeight: 500,
             }}>
               {activeMode.label}
             </div>
           )}
 
-          {/* Burbujas */}
           {messages.map((m, i) => {
-            const isUser = m.role === "user";
+            const isUser    = m.role === "user";
             const isLoading = m.content === "" && generating && i === messages.length - 1;
             return (
               <div key={i} style={{
@@ -324,7 +435,6 @@ export default function ChatInterface({ apiKey, onLogout }) {
             );
           })}
 
-          {/* Preguntas sugeridas */}
           {showSuggestions && (
             <div style={{ marginTop: 8 }}>
               <p style={{ fontSize: 11, color: T.textMuted, textAlign: "center", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -336,8 +446,7 @@ export default function ChatInterface({ apiKey, onLogout }) {
                     textAlign: "left", fontSize: 12, lineHeight: 1.55,
                     background: T.bgCard, border: `1px solid ${T.borderSub}`,
                     borderRadius: T.radiusMd, padding: "10px 14px",
-                    color: T.textSec, cursor: "pointer", fontFamily: T.fontBase,
-                    transition: T.transition,
+                    color: T.textSec, cursor: "pointer", fontFamily: T.fontBase, transition: T.transition,
                   }}
                   onMouseEnter={e => { e.currentTarget.style.borderColor = T.amber; e.currentTarget.style.color = T.textPrim; }}
                   onMouseLeave={e => { e.currentTarget.style.borderColor = T.borderSub; e.currentTarget.style.color = T.textSec; }}>
@@ -351,46 +460,128 @@ export default function ChatInterface({ apiKey, onLogout }) {
         </div>
       </div>
 
-      {/* ── Input ── */}
+      {/* ── Input area ── */}
       <div style={{
         background: T.bgSurface, borderTop: `1px solid ${T.borderSub}`,
         padding: "14px 20px 16px", flexShrink: 0,
       }}>
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          <div style={{
-            display: "flex", gap: 10, alignItems: "flex-end",
-            background: T.bgCard, border: `1px solid ${T.borderMid}`,
-            borderRadius: 14, padding: "10px 10px 10px 16px",
-            transition: T.transition,
-          }}
-          onFocusCapture={e => e.currentTarget.style.borderColor = T.amber}
-          onBlurCapture={e => e.currentTarget.style.borderColor = T.borderMid}>
-            <textarea
-              ref={textareaRef}
-              value={input}
-              onChange={handleChange}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-              placeholder={placeholders[activeMode.id]}
-              rows={1}
-              style={{
-                flex: 1, background: "transparent", border: "none", outline: "none",
-                fontSize: 14, color: T.textPrim, resize: "none",
-                minHeight: 26, maxHeight: 120, lineHeight: 1.6,
-                fontFamily: T.fontBase, padding: 0,
-              }}
-            />
-            <button onClick={() => send()} disabled={!input.trim() || generating} style={{
-              width: 38, height: 38, borderRadius: 10, border: "none",
-              background: input.trim() && !generating ? T.amber : T.bgInset,
-              color: input.trim() && !generating ? "#fff" : T.textMuted,
-              cursor: input.trim() && !generating ? "pointer" : "default",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 16, flexShrink: 0, transition: T.transition,
-            }}>
-              {generating ? "…" : "↑"}
-            </button>
-          </div>
-          <p style={{ textAlign: "center", fontSize: 10, color: T.textMuted, marginTop: 8 }}>
+
+          {/* ── MODO TEXTO (default) ── */}
+          {!voiceMode && (
+            <div style={{
+              display: "flex", gap: 10, alignItems: "flex-end",
+              background: T.bgCard, border: `1px solid ${T.borderMid}`,
+              borderRadius: 14, padding: "10px 10px 10px 16px", transition: T.transition,
+            }}
+            onFocusCapture={e => e.currentTarget.style.borderColor = T.amber}
+            onBlurCapture={e => e.currentTarget.style.borderColor = T.borderMid}>
+              <textarea
+                ref={textareaRef}
+                value={input}
+                onChange={handleChange}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                placeholder={placeholders[activeMode.id]}
+                rows={1}
+                style={{
+                  flex: 1, background: "transparent", border: "none", outline: "none",
+                  fontSize: 14, color: T.textPrim, resize: "none",
+                  minHeight: 26, maxHeight: 120, lineHeight: 1.6,
+                  fontFamily: T.fontBase, padding: 0,
+                }}
+              />
+              <button onClick={() => send()} disabled={!input.trim() || generating} style={{
+                width: 38, height: 38, borderRadius: 10, border: "none",
+                background: input.trim() && !generating ? T.amber : T.bgInset,
+                color: input.trim() && !generating ? "#fff" : T.textMuted,
+                cursor: input.trim() && !generating ? "pointer" : "default",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 16, flexShrink: 0, transition: T.transition,
+              }}>
+                {generating ? "…" : "↑"}
+              </button>
+            </div>
+          )}
+
+          {/* ── MODO VOZ ── */}
+          {voiceMode && (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+
+              {/* Transcript interim */}
+              {transcript && (
+                <div style={{
+                  width: "100%", padding: "10px 16px", borderRadius: T.radiusMd,
+                  background: T.bgCard, border: `1px solid ${T.borderSub}`,
+                  fontSize: 13, color: T.textSec, fontStyle: "italic",
+                  minHeight: 40, textAlign: "center",
+                }}>
+                  {transcript}
+                </div>
+              )}
+
+              {/* Error de voz */}
+              {voiceError && (
+                <div style={{ fontSize: 12, color: T.error, textAlign: "center" }}>
+                  ⚠ {voiceError}
+                </div>
+              )}
+
+              {/* Botón micrófono o estado de reproducción */}
+              {isSpeaking ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+                  <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 36 }}>
+                    {[0,1,2,3,4,5,6].map(i => (
+                      <div key={i} style={{
+                        width: 5, borderRadius: 3, background: T.amber,
+                        animation: "voice-wave 0.8s ease-in-out infinite alternate",
+                        animationDelay: `${i * 0.1}s`,
+                        minHeight: 6,
+                      }} />
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 12, color: T.textSec }}>Chion está hablando…</span>
+                  <button onClick={stopAudio} style={{
+                    padding: "8px 20px", borderRadius: T.radiusMd,
+                    border: `1px solid ${T.borderSub}`, background: T.bgCard,
+                    color: T.textSec, fontSize: 12, cursor: "pointer", fontFamily: T.fontBase,
+                  }}>
+                    ⏹ Detener
+                  </button>
+                </div>
+              ) : generating ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  <ThinkingDots />
+                  <span style={{ fontSize: 12, color: T.textMuted }}>Generando respuesta…</span>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                  <button
+                    onClick={toggleMic}
+                    style={{
+                      width: 72, height: 72, borderRadius: "50%", border: "none",
+                      background: isListening
+                        ? "radial-gradient(circle, #c03020, #8a1a0a)"
+                        : `radial-gradient(circle, ${T.amber}, ${T.amberDim})`,
+                      cursor: "pointer", fontSize: 28,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      boxShadow: isListening
+                        ? "0 0 0 8px rgba(192,48,32,0.2), 0 0 0 16px rgba(192,48,32,0.08)"
+                        : `0 0 0 6px ${T.amberBg}`,
+                      transition: "all 0.2s ease",
+                      animation: isListening ? "mic-pulse 1.2s ease-in-out infinite" : "none",
+                    }}
+                  >
+                    {isListening ? "⏹" : "🎙"}
+                  </button>
+                  <span style={{ fontSize: 12, color: T.textSec }}>
+                    {isListening ? "Escuchando… click para enviar" : "Click para hablar"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <p style={{ textAlign: "center", fontSize: 10, color: T.textMuted, marginTop: 10 }}>
             Basado en «La Audiovisión» (Paidós, 1993) · Consultas registradas localmente
           </p>
         </div>
@@ -400,6 +591,14 @@ export default function ChatInterface({ apiKey, onLogout }) {
         @keyframes dot-bounce {
           0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
           40% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes mic-pulse {
+          0%, 100% { box-shadow: 0 0 0 6px rgba(192,48,32,0.15), 0 0 0 12px rgba(192,48,32,0.05); }
+          50%       { box-shadow: 0 0 0 12px rgba(192,48,32,0.2), 0 0 0 24px rgba(192,48,32,0.08); }
+        }
+        @keyframes voice-wave {
+          from { height: 6px; }
+          to   { height: 32px; }
         }
         textarea::placeholder { color: ${T.textMuted}; }
         ::-webkit-scrollbar { width: 4px; }
