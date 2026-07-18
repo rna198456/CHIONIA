@@ -26,7 +26,8 @@ export const GENERATION_CONFIG = {
 // 2. Publicá el script como web app (ver instrucciones en apps-script.js)
 // 3. Pegá la URL del web app en SHEETS_ENDPOINT
 // Dejalo vacío ("") para desactivar el registro remoto.
-export const SHEETS_ENDPOINT = ""; // ← pegar URL del Apps Script acá
+export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz7PBKif_TdW6KTiXAevhYUX4A8kTNM2Qa07USDgVsKwhXTx8d2HysR8VKwAzDyjoe52A/exec
+ *"; // ← pegar URL del Apps Script acá
 
 // ─── Modos de interacción ────────────────────────────────────────────────────
 export const MODES = [
