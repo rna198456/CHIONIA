@@ -9,22 +9,35 @@ import {
 import { logInteraction, clearApiKey } from "../utils/storage";
 import { sendToRemoteLog } from "../utils/remoteLog";
 import {
-  isSpeechSupported, createRecognition, speakWithGroq,
+  isSpeechSupported, isSynthesisSupported,
+  createRecognition, speakInSpanish, stopSpeaking,
 } from "../utils/voice";
 
 const MODEL_KEY    = "chion_model";
-const getSavedModel = () => { try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; } };
-const saveModel     = (m) => { try { sessionStorage.setItem(MODEL_KEY, m); } catch {} };
+const getSaved = () => { try { return sessionStorage.getItem(MODEL_KEY) || null; } catch { return null; } };
+const saveModel = m => { try { sessionStorage.setItem(MODEL_KEY, m); } catch {} };
 
-// ── Dots loader ───────────────────────────────────────────────────────────────
+// ── Hook responsive ───────────────────────────────────────────────────────────
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() => window.innerWidth < 640);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 639px)");
+    const h  = e => setMobile(e.matches);
+    mq.addEventListener("change", h);
+    return () => mq.removeEventListener("change", h);
+  }, []);
+  return mobile;
+}
+
+// ── Thinking dots ─────────────────────────────────────────────────────────────
 function ThinkingDots() {
   return (
-    <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "2px 0" }}>
+    <div style={{ display:"flex", gap:5, alignItems:"center", padding:"2px 0" }}>
       {[0,1,2].map(i => (
         <span key={i} style={{
-          width: 7, height: 7, borderRadius: "50%", background: T.amber,
-          animation: "dot-bounce 1.2s ease-in-out infinite",
-          animationDelay: `${i * 0.18}s`,
+          width:7, height:7, borderRadius:"50%", background:T.amber,
+          animation:"dot-bounce 1.2s ease-in-out infinite",
+          animationDelay:`${i*0.18}s`,
         }} />
       ))}
     </div>
@@ -33,33 +46,26 @@ function ThinkingDots() {
 
 // ── Groq chat ─────────────────────────────────────────────────────────────────
 async function callGroq(apiKey, messages) {
-  const saved  = getSavedModel();
-  const models = saved ? [saved, ...GROQ_MODELS.filter(m => m !== saved)] : GROQ_MODELS;
-
+  const saved  = getSaved();
+  const models = saved ? [saved, ...GROQ_MODELS.filter(m=>m!==saved)] : GROQ_MODELS;
   for (const model of models) {
     const res = await fetch(GROQ_ENDPOINT, {
-      method:  "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        messages,
-        temperature: GENERATION_CONFIG.temperature,
-        max_tokens:  GENERATION_CONFIG.max_tokens,
-        top_p:       GENERATION_CONFIG.top_p,
-        stream:      false,
-      }),
+      method:"POST",
+      headers:{"Authorization":`Bearer ${apiKey}`,"Content-Type":"application/json"},
+      body: JSON.stringify({ model, messages,
+        temperature:GENERATION_CONFIG.temperature, max_tokens:GENERATION_CONFIG.max_tokens,
+        top_p:GENERATION_CONFIG.top_p, stream:false }),
     });
-
-    if (res.status === 404) continue;
-    const data = await res.json().catch(() => ({}));
+    if (res.status===404) continue;
+    const data = await res.json().catch(()=>({}));
     if (!res.ok) {
-      const msg = data?.error?.message || "";
-      if (res.status === 401) throw new Error("API key inválida. Usá el botón 🔑 para cambiarla.");
-      if (res.status === 429) throw new Error("Límite de requests alcanzado. Esperá un minuto.");
-      throw new Error(`Error ${res.status}: ${msg || "Error de la API."}`);
+      const msg = data?.error?.message||"";
+      if (res.status===401) throw new Error("API key inválida. Usá el botón 🔑 para cambiarla.");
+      if (res.status===429) throw new Error("Límite de requests. Esperá un minuto.");
+      throw new Error(`Error ${res.status}: ${msg||"Error de la API."}`);
     }
     saveModel(model);
-    const reply = data?.choices?.[0]?.message?.content ?? "";
+    const reply = data?.choices?.[0]?.message?.content??"";
     if (!reply) throw new Error("Respuesta vacía. Intentá de nuevo.");
     return { reply, model };
   }
@@ -68,542 +74,466 @@ async function callGroq(apiKey, messages) {
 
 // ── Componente principal ──────────────────────────────────────────────────────
 export default function ChatInterface({ apiKey, onLogout }) {
+  const isMobile = useIsMobile();
   const DEFAULT_MODE = MODES[0];
 
-  // Chat state
   const [activeMode,  setActiveMode]  = useState(DEFAULT_MODE);
   const [messages,    setMessages]    = useState([WELCOME_MESSAGE]);
   const [input,       setInput]       = useState("");
   const [generating,  setGenerating]  = useState(false);
   const [showPanel,   setShowPanel]   = useState(false);
-  const [activeModel, setActiveModel] = useState(getSavedModel() || "");
+  const [activeModel, setActiveModel] = useState(getSaved()||"");
 
-  // Voice state
-  const [voiceMode,    setVoiceMode]    = useState(false);
-  const [isListening,  setIsListening]  = useState(false);
-  const [isSpeaking,   setIsSpeaking]   = useState(false);
-  const [transcript,   setTranscript]   = useState(""); // texto interim
-  const [voiceError,   setVoiceError]   = useState("");
+  const [voiceMode,   setVoiceMode]   = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking,  setIsSpeaking]  = useState(false);
+  const [transcript,  setTranscript]  = useState("");
+  const [voiceError,  setVoiceError]  = useState("");
 
-  // Refs
-  const bottomRef    = useRef(null);
-  const textareaRef  = useRef(null);
-  const abortRef     = useRef(false);
-  const recognRef    = useRef(null);   // instancia SpeechRecognition
-  const audioRef     = useRef(null);   // instancia Audio (TTS)
+  const bottomRef   = useRef(null);
+  const textareaRef = useRef(null);
+  const abortRef    = useRef(false);
+  const recognRef   = useRef(null);
 
-  const speechOk = isSpeechSupported();
+  const speechOk    = isSpeechSupported();
+  const synthOk     = isSynthesisSupported();
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({behavior:"smooth"}); }, [messages]);
+  useEffect(() => () => { recognRef.current?.stop(); stopSpeaking(); }, []);
 
-  // Limpiar recursos al desmontar
-  useEffect(() => () => {
-    recognRef.current?.stop();
-    audioRef.current?.pause();
-  }, []);
-
-  // ── Exportar conversación ────────────────────────────────────────────────
+  // ── Exportar ─────────────────────────────────────────────────────────────
   const exportConversation = () => {
     const lines = [
       "CHIONIA — Conversación con Michel Chion",
       `Fecha: ${new Date().toLocaleString("es-AR")}`,
-      `Modo: ${activeMode.label}`,
-      "─".repeat(60), "",
-      ...messages.map(m => `[${m.role === "user" ? "ALUMNO" : "MICHEL CHION"}]\n${m.content}\n`),
+      `Modo: ${activeMode.label}`, "─".repeat(60),"",
+      ...messages.map(m=>`[${m.role==="user"?"ALUMNO":"MICHEL CHION"}]\n${m.content}\n`),
     ];
-    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const blob = new Blob([lines.join("\n")],{type:"text/plain;charset=utf-8"});
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement("a");
-    a.href     = url;
-    a.download = `chion-conversacion-${Date.now()}.txt`;
-    a.click();
+    a.href=url; a.download=`chion-conversacion-${Date.now()}.txt`; a.click();
     URL.revokeObjectURL(url);
   };
 
-  // ── Hablar con TTS ───────────────────────────────────────────────────────
+  // ── Detener audio ─────────────────────────────────────────────────────────
+  const stopAudio = () => { stopSpeaking(); setIsSpeaking(false); };
+
+  // ── TTS español ───────────────────────────────────────────────────────────
   const speak = useCallback(async (text) => {
-    if (!voiceMode) return;
-    audioRef.current?.pause();
-    audioRef.current = await speakWithGroq(text, apiKey, {
+    if (!voiceMode || !synthOk) return;
+    stopSpeaking();
+    await speakInSpanish(text, {
       onStart: () => setIsSpeaking(true),
       onEnd:   () => setIsSpeaking(false),
     });
-  }, [voiceMode, apiKey]);
+  }, [voiceMode, synthOk]);
 
-  // ── Detener audio ────────────────────────────────────────────────────────
-  const stopAudio = () => {
-    audioRef.current?.pause();
-    audioRef.current = null;
-    setIsSpeaking(false);
-  };
-
-  // ── Enviar mensaje ───────────────────────────────────────────────────────
+  // ── Enviar mensaje ────────────────────────────────────────────────────────
   const send = useCallback(async (override) => {
     const txt = (override ?? input).trim();
     if (!txt || generating) return;
-
     stopAudio();
     setTranscript("");
-    const userMsg = { role: "user", content: txt };
+    const userMsg = {role:"user",content:txt};
     const updated = [...messages, userMsg];
     setMessages(updated);
-    setInput("");
-    if (textareaRef.current) textareaRef.current.style.height = "46px";
-    setGenerating(true);
-    abortRef.current = false;
-    setMessages(prev => [...prev, { role: "assistant", content: "" }]);
-
+    setInput(""); if (textareaRef.current) textareaRef.current.style.height="46px";
+    setGenerating(true); abortRef.current=false;
+    setMessages(p=>[...p,{role:"assistant",content:""}]);
     try {
-      const systemContent = SYSTEM_PROMPT + (MODE_PROMPTS[activeMode.id] || "");
-      const history = updated.slice(1).slice(-10).map(({ role, content }) => ({
-        role: role === "model" ? "assistant" : role, content,
+      const sys  = SYSTEM_PROMPT+(MODE_PROMPTS[activeMode.id]||"");
+      const hist = updated.slice(1).slice(-10).map(({role,content})=>({
+        role:role==="model"?"assistant":role, content,
       }));
-
-      const { reply, model } = await callGroq(apiKey, [
-        { role: "system", content: systemContent },
-        ...history,
-      ]);
-
-      if (model !== activeModel) setActiveModel(model);
+      const {reply,model} = await callGroq(apiKey,[{role:"system",content:sys},...hist]);
+      if (model!==activeModel) setActiveModel(model);
       if (!abortRef.current) {
-        setMessages(prev => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "assistant", content: reply };
-          return next;
-        });
-        logInteraction(txt, reply);
-        sendToRemoteLog(txt, reply, model);
-        // Leer la respuesta automáticamente si el modo voz está activo
+        setMessages(p=>{const n=[...p];n[n.length-1]={role:"assistant",content:reply};return n;});
+        logInteraction(txt,reply); sendToRemoteLog(txt,reply,model);
         speak(reply);
       }
-    } catch (err) {
-      if (!abortRef.current) {
-        setMessages(prev => {
-          const next = [...prev];
-          next[next.length - 1] = { role: "assistant", content: `⚠ ${err.message}` };
-          return next;
-        });
-      }
-    } finally {
-      setGenerating(false);
-    }
-  }, [input, generating, messages, activeMode, apiKey, activeModel, speak]);
+    } catch(err) {
+      if (!abortRef.current)
+        setMessages(p=>{const n=[...p];n[n.length-1]={role:"assistant",content:`⚠ ${err.message}`};return n;});
+    } finally { setGenerating(false); }
+  }, [input,generating,messages,activeMode,apiKey,activeModel,speak]);
 
-  // ── Micrófono: toggle ────────────────────────────────────────────────────
+  // ── Micrófono toggle ──────────────────────────────────────────────────────
   const toggleMic = () => {
-    if (isListening) {
-      recognRef.current?.stop();
-      setIsListening(false);
-      return;
-    }
-
+    if (isListening) { recognRef.current?.stop(); setIsListening(false); return; }
     setVoiceError("");
-    const recognition = createRecognition();
-    if (!recognition) {
-      setVoiceError("Tu navegador no soporta reconocimiento de voz. Usá Chrome o Edge.");
-      return;
-    }
-
-    // Acumula el transcript
-    let finalText = "";
-    recognition.onresult = (e) => {
-      let interim = "";
-      for (let i = e.resultIndex; i < e.results.length; i++) {
-        if (e.results[i].isFinal) finalText += e.results[i][0].transcript;
-        else interim += e.results[i][0].transcript;
+    const r = createRecognition();
+    if (!r) { setVoiceError("Tu navegador no soporta reconocimiento de voz."); return; }
+    let final = "";
+    r.onresult = e => {
+      let interim="";
+      for (let i=e.resultIndex;i<e.results.length;i++) {
+        if (e.results[i].isFinal) final+=e.results[i][0].transcript;
+        else interim+=e.results[i][0].transcript;
       }
-      setTranscript(finalText + interim);
+      setTranscript(final+interim);
     };
-
-    recognition.onend = () => {
+    r.onend = () => { setIsListening(false); if (final.trim()) { setTranscript(""); send(final.trim()); } };
+    r.onerror = e => {
       setIsListening(false);
-      if (finalText.trim()) {
-        setTranscript("");
-        send(finalText.trim());
-      }
+      if (e.error!=="aborted") setVoiceError(
+        e.error==="not-allowed"?"Permiso de micrófono denegado. Habilitalo en el navegador.":
+        `Error: ${e.error}`
+      );
     };
-
-    recognition.onerror = (e) => {
-      setIsListening(false);
-      if (e.error !== "aborted") {
-        setVoiceError(
-          e.error === "not-allowed"
-            ? "Permiso de micrófono denegado. Habilitalo en la configuración del navegador."
-            : `Error de micrófono: ${e.error}`
-        );
-      }
-    };
-
-    recognRef.current = recognition;
-    recognition.start();
-    setIsListening(true);
+    recognRef.current=r; r.start(); setIsListening(true);
   };
 
-  // ── Cambio de modo ───────────────────────────────────────────────────────
-  const handleModeChange = (mode) => {
-    if (mode.id === activeMode.id) return;
-    stopAudio();
-    recognRef.current?.stop();
-    setIsListening(false);
-    setTranscript("");
-    setActiveMode(mode);
-    setInput("");
-    abortRef.current = true;
-    setGenerating(false);
-    const welcomes = {
+  // ── Cambio de modo ────────────────────────────────────────────────────────
+  const handleModeChange = mode => {
+    if (mode.id===activeMode.id) return;
+    stopAudio(); recognRef.current?.stop(); setIsListening(false); setTranscript("");
+    setActiveMode(mode); setInput(""); abortRef.current=true; setGenerating(false);
+    const w = {
       consulta:    WELCOME_MESSAGE,
-      analisis:    { role: "assistant", content: "Decime qué película y qué escena estás mirando. Cuanto más describís lo que ves y escuchás, más preciso puedo ser en el análisis." },
-      socratico:   { role: "assistant", content: "Bien. Pero aviso: no voy a darte las respuestas directamente. Voy a preguntarte.\n\n¿Sobre qué concepto o escena querés trabajar?" },
-      ocultadores: { role: "assistant", content: "Vamos a analizar una escena juntos, siguiendo el método del capítulo 10 de mi libro.\n\nPaso 1 de 6 — ¿Qué película y qué escena vas a analizar? Tenela disponible para ver mientras trabajamos." },
+      analisis:    {role:"assistant",content:"Decime qué película y qué escena estás mirando. Cuanto más describís, más preciso puedo ser."},
+      socratico:   {role:"assistant",content:"Bien. Aviso: no voy a darte respuestas directas. Voy a preguntarte.\n\n¿Sobre qué concepto o escena querés trabajar?"},
+      ocultadores: {role:"assistant",content:"Vamos a analizar una escena juntos, siguiendo el método del capítulo 10.\n\nPaso 1 de 6 — ¿Qué película y qué escena vas a analizar?"},
     };
-    setMessages([welcomes[mode.id] || WELCOME_MESSAGE]);
-    if (textareaRef.current) textareaRef.current.style.height = "46px";
+    setMessages([w[mode.id]||WELCOME_MESSAGE]);
+    if (textareaRef.current) textareaRef.current.style.height="46px";
   };
 
-  // ── Toggle modo voz ───────────────────────────────────────────────────────
   const toggleVoiceMode = () => {
-    if (voiceMode) {
-      stopAudio();
-      recognRef.current?.stop();
-      setIsListening(false);
-      setTranscript("");
-    }
-    setVoiceMode(v => !v);
-    setVoiceError("");
+    if (voiceMode) { stopAudio(); recognRef.current?.stop(); setIsListening(false); setTranscript(""); }
+    setVoiceMode(v=>!v); setVoiceError("");
   };
 
-  const reset = () => { stopAudio(); recognRef.current?.stop(); setIsListening(false); setTranscript(""); abortRef.current = true; handleModeChange(activeMode); setGenerating(false); };
+  const reset = () => {
+    stopAudio(); recognRef.current?.stop(); setIsListening(false); setTranscript("");
+    abortRef.current=true; setGenerating(false); handleModeChange(activeMode);
+  };
+
   const handleLogout = () => {
     if (!confirm("¿Eliminar tu API key?")) return;
-    clearApiKey(); try { sessionStorage.removeItem(MODEL_KEY); } catch {}
-    onLogout();
+    clearApiKey(); try{sessionStorage.removeItem(MODEL_KEY);}catch{} onLogout();
   };
-  const handleChange = (e) => {
+
+  const handleChange = e => {
     setInput(e.target.value);
-    const ta = e.target;
-    ta.style.height = "auto";
-    ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+    const ta=e.target; ta.style.height="auto";
+    ta.style.height=Math.min(ta.scrollHeight,120)+"px";
   };
 
   const placeholders = {
-    consulta:    "Preguntale a Chion sobre su obra…",
-    analisis:    "Describí la película y la escena que querés analizar…",
-    socratico:   "Escribí lo que querés explorar…",
-    ocultadores: "Respondé para continuar con el siguiente paso…",
+    consulta:"Preguntale a Chion sobre su obra…",
+    analisis:"Describí la película y la escena…",
+    socratico:"Escribí lo que querés explorar…",
+    ocultadores:"Respondé para continuar…",
   };
-  const showSuggestions = messages.length === 1 && !generating && activeMode.id === "consulta";
+  const showSuggestions = messages.length===1 && !generating && activeMode.id==="consulta";
+
+  // ── Botones del header ─────────────────────────────────────────────────────
+  const headerBtns = [
+    {label:"Exportar", icon:"⬇", onClick:exportConversation, title:"Descargar conversación"},
+    {label:"Registro", icon:"📊", onClick:()=>setShowPanel(true), title:"Registro de sesión"},
+    {label:"Reiniciar",icon:"↺", onClick:reset, title:"Nueva conversación"},
+  ];
 
   return (
     <div style={{
-      minHeight: "100vh", background: T.bgBase, color: T.textPrim,
-      display: "flex", flexDirection: "column", fontFamily: T.fontBase,
+      minHeight:"100vh", background:T.bgBase, color:T.textPrim,
+      display:"flex", flexDirection:"column", fontFamily:T.fontBase,
     }}>
 
-      {/* ── Header ── */}
+      {/* ── HEADER ── */}
       <header style={{
-        background: T.bgSurface, borderBottom: `1px solid ${T.borderSub}`,
-        padding: "0 20px", height: 56,
-        display: "flex", alignItems: "center", gap: 12,
-        position: "sticky", top: 0, zIndex: 20, flexShrink: 0,
+        background:T.bgSurface, borderBottom:`1px solid ${T.borderSub}`,
+        padding:"0 16px", height:56,
+        display:"flex", alignItems:"center", gap:10,
+        position:"sticky", top:0, zIndex:30, flexShrink:0,
       }}>
-        <Avatar size={34} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: T.textPrim, letterSpacing: "-0.01em" }}>
+        <Avatar size={32} />
+
+        {/* Título — se acorta en mobile */}
+        <div style={{flex:1, minWidth:0, overflow:"hidden"}}>
+          <div style={{fontSize:14,fontWeight:600,color:T.textPrim,letterSpacing:"-0.01em",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
             Michel Chion
           </div>
-          <div style={{ fontSize: 11, color: T.textMuted, marginTop: 1 }}>
-            {activeModel || "Groq AI"} · {activeMode.label}
-          </div>
+          {!isMobile && (
+            <div style={{fontSize:11,color:T.textMuted,marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+              {activeModel||"Groq AI"} · {activeMode.label}
+            </div>
+          )}
         </div>
 
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, marginRight: 2 }}>
-            <span style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80", display: "block" }} />
-            <span style={{ fontSize: 11, color: T.textMuted }}>En línea</span>
-          </div>
+        {/* Acciones */}
+        <div style={{display:"flex",gap:isMobile?4:6,alignItems:"center",flexShrink:0}}>
+
+          {/* Indicador online — solo desktop */}
+          {!isMobile && (
+            <div style={{display:"flex",alignItems:"center",gap:4,marginRight:4}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:"#4ade80",display:"block"}}/>
+              <span style={{fontSize:11,color:T.textMuted}}>En línea</span>
+            </div>
+          )}
 
           {/* Toggle voz */}
           {speechOk && (
-            <button onClick={toggleVoiceMode} title={voiceMode ? "Volver a modo texto" : "Activar modo voz"} style={{
-              display: "flex", alignItems: "center", gap: 5,
-              padding: "0 12px", height: 32, borderRadius: T.radiusMd,
-              border: `1px solid ${voiceMode ? T.amber : T.borderSub}`,
-              background: voiceMode ? T.amberBg : T.bgCard,
-              color: voiceMode ? T.amber : T.textSec,
-              fontSize: 12, fontWeight: voiceMode ? 600 : 400,
-              cursor: "pointer", fontFamily: T.fontBase, transition: T.transition,
+            <button onClick={toggleVoiceMode} title={voiceMode?"Volver a texto":"Activar voz"} style={{
+              display:"flex",alignItems:"center",gap:isMobile?0:5,
+              padding:isMobile?"0 9px":"0 12px", height:34, borderRadius:T.radiusMd,
+              border:`1px solid ${voiceMode?T.amber:T.borderSub}`,
+              background:voiceMode?T.amberBg:T.bgCard,
+              color:voiceMode?T.amber:T.textSec,
+              fontSize:isMobile?16:12, fontWeight:voiceMode?600:400,
+              cursor:"pointer",fontFamily:T.fontBase,transition:T.transition,minWidth:34,
             }}>
-              <span style={{ fontSize: 14 }}>🎙</span>
-              {voiceMode ? "Voz activa" : "Voz"}
+              <span>🎙</span>
+              {!isMobile && <span>{voiceMode?"Voz activa":"Voz"}</span>}
             </button>
           )}
 
-          {[
-            { label: "Exportar", icon: "⬇", onClick: exportConversation, title: "Descargar conversación completa" },
-            { label: "Registro", icon: "📊", onClick: () => setShowPanel(true), title: "Ver registro de sesión" },
-            { label: "Reiniciar", icon: null, onClick: reset, title: "Nueva conversación" },
-          ].map((btn, i) => (
+          {/* Botones secundarios */}
+          {headerBtns.map((btn,i)=>(
             <button key={i} onClick={btn.onClick} title={btn.title} style={{
-              display: "flex", alignItems: "center", gap: 5,
-              padding: "0 12px", height: 32, borderRadius: T.radiusMd,
-              border: `1px solid ${T.borderSub}`, background: T.bgCard,
-              color: T.textSec, fontSize: 12, fontWeight: 500,
-              cursor: "pointer", fontFamily: T.fontBase, transition: T.transition,
-              whiteSpace: "nowrap",
+              display:"flex",alignItems:"center",justifyContent:"center",gap:isMobile?0:5,
+              padding:isMobile?"0 9px":"0 12px", height:34, minWidth:34,
+              borderRadius:T.radiusMd, border:`1px solid ${T.borderSub}`,
+              background:T.bgCard, color:T.textSec,
+              fontSize:isMobile?15:12, fontWeight:500,
+              cursor:"pointer",fontFamily:T.fontBase,transition:T.transition,
+              whiteSpace:"nowrap",
             }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = T.borderStr; e.currentTarget.style.color = T.textPrim; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = T.borderSub; e.currentTarget.style.color = T.textSec; }}>
-              {btn.icon && <span>{btn.icon}</span>}
-              {btn.label}
+            onMouseEnter={e=>{e.currentTarget.style.borderColor=T.borderStr;e.currentTarget.style.color=T.textPrim;}}
+            onMouseLeave={e=>{e.currentTarget.style.borderColor=T.borderSub;e.currentTarget.style.color=T.textSec;}}>
+              <span>{btn.icon}</span>
+              {!isMobile && <span>{btn.label}</span>}
             </button>
           ))}
 
           <button onClick={handleLogout} title="Cambiar API key" style={{
-            padding: "0 8px", height: 32, border: `1px solid ${T.borderSub}`,
-            background: "transparent", borderRadius: T.radiusMd,
-            color: T.textMuted, fontSize: 14, cursor: "pointer",
+            padding:"0 8px",height:34,border:`1px solid ${T.borderSub}`,
+            background:"transparent",borderRadius:T.radiusMd,
+            color:T.textMuted,fontSize:14,cursor:"pointer",minWidth:34,
           }}>🔑</button>
         </div>
       </header>
 
-      {showPanel && <LogPanel onClose={() => setShowPanel(false)} />}
+      {showPanel && <LogPanel onClose={()=>setShowPanel(false)}/>}
 
-      {/* ── Selector de modos ── */}
+      {/* ── BARRA DE MODOS — sticky debajo del header ── */}
       <div style={{
-        background: T.bgSurface, borderBottom: `1px solid ${T.borderSub}`,
-        padding: "0 20px", height: 44,
-        display: "flex", alignItems: "center", gap: 4,
-        overflowX: "auto", flexShrink: 0,
+        background:T.bgSurface, borderBottom:`1px solid ${T.borderSub}`,
+        padding:"0 12px", height:44,
+        display:"flex", alignItems:"center", gap:isMobile?2:4,
+        overflowX:"auto", flexShrink:0,
+        position:"sticky", top:56, zIndex:20,
+        // Ocultar scrollbar pero mantener scroll
+        scrollbarWidth:"none", msOverflowStyle:"none",
       }}>
-        {MODES.map((mode) => {
-          const isActive = activeMode.id === mode.id;
+        {MODES.map(mode=>{
+          const isActive=activeMode.id===mode.id;
           return (
-            <button key={mode.id} onClick={() => handleModeChange(mode)} title={mode.desc} style={{
-              display: "flex", alignItems: "center", gap: 6,
-              padding: "0 14px", height: 30, borderRadius: T.radiusFull,
-              whiteSpace: "nowrap", flexShrink: 0,
-              fontSize: 12, fontWeight: isActive ? 600 : 400,
-              fontFamily: T.fontBase, cursor: "pointer",
-              border: `1px solid ${isActive ? mode.border : "transparent"}`,
-              background: isActive ? mode.bg : "transparent",
-              color: isActive ? mode.color : T.textSec, transition: T.transition,
+            <button key={mode.id} onClick={()=>handleModeChange(mode)} title={mode.desc} style={{
+              display:"flex",alignItems:"center",
+              padding:isMobile?"0 10px":"0 14px",
+              height:30, minHeight:30,
+              borderRadius:T.radiusFull, whiteSpace:"nowrap", flexShrink:0,
+              fontSize:isMobile?11:12, fontWeight:isActive?600:400,
+              fontFamily:T.fontBase, cursor:"pointer",
+              border:`1px solid ${isActive?mode.border:"transparent"}`,
+              background:isActive?mode.bg:"transparent",
+              color:isActive?mode.color:T.textSec, transition:T.transition,
             }}
-            onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = T.bgCard; e.currentTarget.style.color = T.textPrim; }}}
-            onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = T.textSec; }}}>
+            onMouseEnter={e=>{if(!isActive){e.currentTarget.style.background=T.bgCard;e.currentTarget.style.color=T.textPrim;}}}
+            onMouseLeave={e=>{if(!isActive){e.currentTarget.style.background="transparent";e.currentTarget.style.color=T.textSec;}}}>
               {mode.label}
             </button>
           );
         })}
       </div>
 
-      {/* ── Mensajes ── */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "20px 20px 0" }}>
-        <div style={{ maxWidth: 720, margin: "0 auto", display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* ── MENSAJES ── */}
+      <div style={{flex:1,overflowY:"auto",padding:isMobile?"16px 12px 0":"20px 20px 0"}}>
+        <div style={{maxWidth:720,margin:"0 auto",display:"flex",flexDirection:"column",gap:14}}>
 
-          {activeMode.id !== "consulta" && (
+          {activeMode.id!=="consulta" && (
             <div style={{
-              alignSelf: "center", padding: "5px 14px", borderRadius: T.radiusFull,
-              border: `1px solid ${activeMode.border}`, background: activeMode.bg,
-              fontSize: 11, color: activeMode.color, fontWeight: 500,
-            }}>
-              {activeMode.label}
-            </div>
+              alignSelf:"center",padding:"5px 14px",borderRadius:T.radiusFull,
+              border:`1px solid ${activeMode.border}`,background:activeMode.bg,
+              fontSize:11,color:activeMode.color,fontWeight:500,
+            }}>{activeMode.label}</div>
           )}
 
-          {messages.map((m, i) => {
-            const isUser    = m.role === "user";
-            const isLoading = m.content === "" && generating && i === messages.length - 1;
+          {messages.map((m,i)=>{
+            const isUser=m.role==="user";
+            const isLoad=m.content===""&&generating&&i===messages.length-1;
             return (
               <div key={i} style={{
-                display: "flex", gap: 10,
-                justifyContent: isUser ? "flex-end" : "flex-start",
-                alignItems: "flex-start",
+                display:"flex",gap:8,
+                justifyContent:isUser?"flex-end":"flex-start",
+                alignItems:"flex-start",
               }}>
-                {!isUser && <Avatar size={28} />}
+                {!isUser && <Avatar size={isMobile?24:28}/>}
                 <div style={{
-                  maxWidth: "76%",
-                  padding: isLoading ? "14px 16px" : "12px 16px",
-                  borderRadius: isUser ? "14px 4px 14px 14px" : "4px 14px 14px 14px",
-                  fontSize: 14, lineHeight: 1.7, whiteSpace: "pre-wrap",
-                  background: isUser ? T.amberDim : T.bgCard,
-                  color: isUser ? T.amberText : T.textPrim,
-                  border: !isUser ? `1px solid ${T.borderSub}` : "none",
+                  maxWidth:isMobile?"88%":"76%",
+                  padding:isLoad?"14px 16px":"11px 15px",
+                  borderRadius:isUser?"14px 4px 14px 14px":"4px 14px 14px 14px",
+                  fontSize:isMobile?13.5:14, lineHeight:1.7, whiteSpace:"pre-wrap",
+                  background:isUser?T.amberDim:T.bgCard,
+                  color:isUser?T.amberText:T.textPrim,
+                  border:!isUser?`1px solid ${T.borderSub}`:"none",
                 }}>
-                  {isLoading ? <ThinkingDots /> : m.content}
+                  {isLoad?<ThinkingDots/>:m.content}
                 </div>
               </div>
             );
           })}
 
           {showSuggestions && (
-            <div style={{ marginTop: 8 }}>
-              <p style={{ fontSize: 11, color: T.textMuted, textAlign: "center", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+            <div style={{marginTop:8}}>
+              <p style={{fontSize:11,color:T.textMuted,textAlign:"center",marginBottom:10,textTransform:"uppercase",letterSpacing:"0.08em"}}>
                 Preguntas sugeridas
               </p>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {SUGGESTIONS.map((s, i) => (
-                  <button key={i} onClick={() => send(s)} style={{
-                    textAlign: "left", fontSize: 12, lineHeight: 1.55,
-                    background: T.bgCard, border: `1px solid ${T.borderSub}`,
-                    borderRadius: T.radiusMd, padding: "10px 14px",
-                    color: T.textSec, cursor: "pointer", fontFamily: T.fontBase, transition: T.transition,
+              <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"1fr 1fr",gap:8}}>
+                {SUGGESTIONS.map((s,i)=>(
+                  <button key={i} onClick={()=>send(s)} style={{
+                    textAlign:"left",fontSize:12,lineHeight:1.55,
+                    background:T.bgCard,border:`1px solid ${T.borderSub}`,
+                    borderRadius:T.radiusMd,padding:isMobile?"10px 12px":"10px 14px",
+                    color:T.textSec,cursor:"pointer",fontFamily:T.fontBase,
+                    minHeight:44, transition:T.transition,
                   }}
-                  onMouseEnter={e => { e.currentTarget.style.borderColor = T.amber; e.currentTarget.style.color = T.textPrim; }}
-                  onMouseLeave={e => { e.currentTarget.style.borderColor = T.borderSub; e.currentTarget.style.color = T.textSec; }}>
+                  onMouseEnter={e=>{e.currentTarget.style.borderColor=T.amber;e.currentTarget.style.color=T.textPrim;}}
+                  onMouseLeave={e=>{e.currentTarget.style.borderColor=T.borderSub;e.currentTarget.style.color=T.textSec;}}>
                     {s}
                   </button>
                 ))}
               </div>
             </div>
           )}
-          <div ref={bottomRef} style={{ height: 16 }} />
+          <div ref={bottomRef} style={{height:16}}/>
         </div>
       </div>
 
-      {/* ── Input area ── */}
+      {/* ── ÁREA DE INPUT — sticky en el fondo ── */}
       <div style={{
-        background: T.bgSurface, borderTop: `1px solid ${T.borderSub}`,
-        padding: "14px 20px 16px", flexShrink: 0,
+        background:T.bgSurface, borderTop:`1px solid ${T.borderSub}`,
+        padding:isMobile?"10px 12px 12px":"14px 20px 16px",
+        position:"sticky", bottom:0, zIndex:20, flexShrink:0,
       }}>
-        <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{maxWidth:720,margin:"0 auto"}}>
 
-          {/* ── MODO TEXTO (default) ── */}
+          {/* MODO TEXTO */}
           {!voiceMode && (
             <div style={{
-              display: "flex", gap: 10, alignItems: "flex-end",
-              background: T.bgCard, border: `1px solid ${T.borderMid}`,
-              borderRadius: 14, padding: "10px 10px 10px 16px", transition: T.transition,
+              display:"flex",gap:8,alignItems:"flex-end",
+              background:T.bgCard,border:`1px solid ${T.borderMid}`,
+              borderRadius:14,padding:"8px 8px 8px 14px",transition:T.transition,
             }}
-            onFocusCapture={e => e.currentTarget.style.borderColor = T.amber}
-            onBlurCapture={e => e.currentTarget.style.borderColor = T.borderMid}>
+            onFocusCapture={e=>e.currentTarget.style.borderColor=T.amber}
+            onBlurCapture={e=>e.currentTarget.style.borderColor=T.borderMid}>
               <textarea
                 ref={textareaRef}
                 value={input}
                 onChange={handleChange}
-                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}}
                 placeholder={placeholders[activeMode.id]}
                 rows={1}
                 style={{
-                  flex: 1, background: "transparent", border: "none", outline: "none",
-                  fontSize: 14, color: T.textPrim, resize: "none",
-                  minHeight: 26, maxHeight: 120, lineHeight: 1.6,
-                  fontFamily: T.fontBase, padding: 0,
+                  flex:1,background:"transparent",border:"none",outline:"none",
+                  fontSize:isMobile?14:14,color:T.textPrim,resize:"none",
+                  minHeight:26,maxHeight:120,lineHeight:1.6,
+                  fontFamily:T.fontBase,padding:0,
                 }}
               />
-              <button onClick={() => send()} disabled={!input.trim() || generating} style={{
-                width: 38, height: 38, borderRadius: 10, border: "none",
-                background: input.trim() && !generating ? T.amber : T.bgInset,
-                color: input.trim() && !generating ? "#fff" : T.textMuted,
-                cursor: input.trim() && !generating ? "pointer" : "default",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                fontSize: 16, flexShrink: 0, transition: T.transition,
+              <button onClick={()=>send()} disabled={!input.trim()||generating} style={{
+                width:38,height:38,borderRadius:10,border:"none",
+                background:input.trim()&&!generating?T.amber:T.bgInset,
+                color:input.trim()&&!generating?"#fff":T.textMuted,
+                cursor:input.trim()&&!generating?"pointer":"default",
+                display:"flex",alignItems:"center",justifyContent:"center",
+                fontSize:18,flexShrink:0,transition:T.transition,
               }}>
-                {generating ? "…" : "↑"}
+                {generating?"…":"↑"}
               </button>
             </div>
           )}
 
-          {/* ── MODO VOZ ── */}
+          {/* MODO VOZ */}
           {voiceMode && (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
-
-              {/* Transcript interim */}
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:12}}>
               {transcript && (
                 <div style={{
-                  width: "100%", padding: "10px 16px", borderRadius: T.radiusMd,
-                  background: T.bgCard, border: `1px solid ${T.borderSub}`,
-                  fontSize: 13, color: T.textSec, fontStyle: "italic",
-                  minHeight: 40, textAlign: "center",
+                  width:"100%",padding:"10px 16px",borderRadius:T.radiusMd,
+                  background:T.bgCard,border:`1px solid ${T.borderSub}`,
+                  fontSize:13,color:T.textSec,fontStyle:"italic",textAlign:"center",
                 }}>
                   {transcript}
                 </div>
               )}
+              {voiceError && <div style={{fontSize:12,color:T.error,textAlign:"center"}}>⚠ {voiceError}</div>}
 
-              {/* Error de voz */}
-              {voiceError && (
-                <div style={{ fontSize: 12, color: T.error, textAlign: "center" }}>
-                  ⚠ {voiceError}
-                </div>
-              )}
-
-              {/* Botón micrófono o estado de reproducción */}
               {isSpeaking ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-                  <div style={{ display: "flex", alignItems: "flex-end", gap: 5, height: 36 }}>
-                    {[0,1,2,3,4,5,6].map(i => (
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <div style={{display:"flex",alignItems:"flex-end",gap:4,height:32}}>
+                    {[0,1,2,3,4,5,6].map(i=>(
                       <div key={i} style={{
-                        width: 5, borderRadius: 3, background: T.amber,
-                        animation: "voice-wave 0.8s ease-in-out infinite alternate",
-                        animationDelay: `${i * 0.1}s`,
-                        minHeight: 6,
-                      }} />
+                        width:4,borderRadius:3,background:T.amber,minHeight:4,
+                        animation:"voice-wave 0.7s ease-in-out infinite alternate",
+                        animationDelay:`${i*0.09}s`,
+                      }}/>
                     ))}
                   </div>
-                  <span style={{ fontSize: 12, color: T.textSec }}>Chion está hablando…</span>
+                  <span style={{fontSize:12,color:T.textSec}}>Chion está hablando…</span>
                   <button onClick={stopAudio} style={{
-                    padding: "8px 20px", borderRadius: T.radiusMd,
-                    border: `1px solid ${T.borderSub}`, background: T.bgCard,
-                    color: T.textSec, fontSize: 12, cursor: "pointer", fontFamily: T.fontBase,
-                  }}>
-                    ⏹ Detener
-                  </button>
+                    padding:"7px 18px",borderRadius:T.radiusMd,
+                    border:`1px solid ${T.borderSub}`,background:T.bgCard,
+                    color:T.textSec,fontSize:12,cursor:"pointer",fontFamily:T.fontBase,minHeight:36,
+                  }}>⏹ Detener</button>
                 </div>
               ) : generating ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                  <ThinkingDots />
-                  <span style={{ fontSize: 12, color: T.textMuted }}>Generando respuesta…</span>
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <ThinkingDots/>
+                  <span style={{fontSize:12,color:T.textMuted}}>Generando respuesta…</span>
                 </div>
               ) : (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                  <button
-                    onClick={toggleMic}
-                    style={{
-                      width: 72, height: 72, borderRadius: "50%", border: "none",
-                      background: isListening
-                        ? "radial-gradient(circle, #c03020, #8a1a0a)"
-                        : `radial-gradient(circle, ${T.amber}, ${T.amberDim})`,
-                      cursor: "pointer", fontSize: 28,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      boxShadow: isListening
-                        ? "0 0 0 8px rgba(192,48,32,0.2), 0 0 0 16px rgba(192,48,32,0.08)"
-                        : `0 0 0 6px ${T.amberBg}`,
-                      transition: "all 0.2s ease",
-                      animation: isListening ? "mic-pulse 1.2s ease-in-out infinite" : "none",
-                    }}
-                  >
-                    {isListening ? "⏹" : "🎙"}
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8}}>
+                  <button onClick={toggleMic} style={{
+                    width:68,height:68,borderRadius:"50%",border:"none",
+                    background:isListening
+                      ?"radial-gradient(circle,#c03020,#8a1a0a)"
+                      :`radial-gradient(circle,${T.amber},${T.amberDim})`,
+                    cursor:"pointer",fontSize:26,
+                    display:"flex",alignItems:"center",justifyContent:"center",
+                    boxShadow:isListening
+                      ?"0 0 0 8px rgba(192,48,32,0.2),0 0 0 16px rgba(192,48,32,0.07)"
+                      :`0 0 0 6px ${T.amberBg}`,
+                    transition:"all 0.2s",
+                    animation:isListening?"mic-pulse 1.2s ease-in-out infinite":"none",
+                  }}>
+                    {isListening?"⏹":"🎙"}
                   </button>
-                  <span style={{ fontSize: 12, color: T.textSec }}>
-                    {isListening ? "Escuchando… click para enviar" : "Click para hablar"}
+                  <span style={{fontSize:12,color:T.textSec}}>
+                    {isListening?"Escuchando… click para enviar":"Click para hablar"}
                   </span>
                 </div>
               )}
             </div>
           )}
 
-          <p style={{ textAlign: "center", fontSize: 10, color: T.textMuted, marginTop: 10 }}>
-            Basado en «La Audiovisión» (Paidós, 1993) · Consultas registradas localmente
+          <p style={{textAlign:"center",fontSize:10,color:T.textMuted,marginTop:8}}>
+            «La Audiovisión» (Paidós, 1993) · Consultas registradas localmente
           </p>
         </div>
       </div>
 
       <style>{`
-        @keyframes dot-bounce {
-          0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-        @keyframes mic-pulse {
-          0%, 100% { box-shadow: 0 0 0 6px rgba(192,48,32,0.15), 0 0 0 12px rgba(192,48,32,0.05); }
-          50%       { box-shadow: 0 0 0 12px rgba(192,48,32,0.2), 0 0 0 24px rgba(192,48,32,0.08); }
-        }
-        @keyframes voice-wave {
-          from { height: 6px; }
-          to   { height: 32px; }
-        }
-        textarea::placeholder { color: ${T.textMuted}; }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: ${T.borderMid}; border-radius: 4px; }
+        @keyframes dot-bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+        @keyframes mic-pulse  { 0%,100%{box-shadow:0 0 0 6px rgba(192,48,32,0.15),0 0 0 12px rgba(192,48,32,0.05)} 50%{box-shadow:0 0 0 12px rgba(192,48,32,0.2),0 0 0 24px rgba(192,48,32,0.08)} }
+        @keyframes voice-wave { from{height:4px} to{height:28px} }
+        textarea::placeholder{color:${T.textMuted};}
+        div[style*="scrollbar-width"]::-webkit-scrollbar{display:none;}
+        ::-webkit-scrollbar{width:4px;}
+        ::-webkit-scrollbar-track{background:transparent;}
+        ::-webkit-scrollbar-thumb{background:${T.borderMid};border-radius:4px;}
       `}</style>
     </div>
   );
