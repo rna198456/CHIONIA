@@ -1,78 +1,110 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// voice.js — Entrada por micrófono (Web Speech API) + Salida TTS (Groq)
+// voice.js — Entrada: Web Speech API · Salida: SpeechSynthesis (español, gratis)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Limpia el texto antes de enviarlo al TTS ──────────────────────────────────
+// ── Limpia el texto para TTS ──────────────────────────────────────────────────
 export function cleanForTTS(text) {
   return text
-    .replace(/\*\*(.*?)\*\*/g, "$1")   // **negrita** → texto
-    .replace(/\*(.*?)\*/g, "$1")        // *cursiva* → texto
-    .replace(/━+/g, ".")                // separadores → pausa
-    .replace(/[⚠✓✗📊🎬📖🔑⬇🗑]/g, "")  // íconos → nada
-    .replace(/Paso \d+ de \d+ —/g, m => m.replace("—", ".")) // pasos
-    .replace(/\n{2,}/g, ". ")           // párrafos → pausa
-    .replace(/\n/g, " ")                // saltos → espacio
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/━+/g, ". ")
+    .replace(/[⚠✓✗📊🎬📖🔑⬇🗑]/g, "")
+    .replace(/Paso (\d+) de (\d+) —/g, "Paso $1 de $2.")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
     .trim()
-    .substring(0, 3000);                // límite Groq TTS
+    .substring(0, 1200); // ~60 segundos de audio
 }
 
-// ── Verifica soporte de Web Speech API ───────────────────────────────────────
-export function isSpeechSupported() {
-  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+// ── Soporte ───────────────────────────────────────────────────────────────────
+export const isSpeechSupported   = () => !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+export const isSynthesisSupported = () => "speechSynthesis" in window;
+
+// ── Obtiene la mejor voz en español disponible ────────────────────────────────
+function getBestSpanishVoice() {
+  const voices = window.speechSynthesis.getVoices();
+  if (!voices.length) return null;
+
+  const priorities = [
+    // 1. Voces locales en español rioplatense / latinoamericano
+    v => v.lang === "es-AR" && v.localService,
+    v => v.lang === "es-MX" && v.localService,
+    v => v.lang === "es-419" && v.localService,
+    // 2. Google español (excelente calidad en Chrome/Android)
+    v => v.lang.startsWith("es") && v.name.toLowerCase().includes("google"),
+    // 3. Microsoft español (buena calidad en Edge/Windows)
+    v => v.lang.startsWith("es") && v.name.toLowerCase().includes("microsoft"),
+    // 4. Cualquier voz en español local
+    v => v.lang.startsWith("es") && v.localService,
+    // 5. Cualquier voz en español
+    v => v.lang.startsWith("es"),
+  ];
+
+  for (const test of priorities) {
+    const found = voices.find(test);
+    if (found) return found;
+  }
+  return null;
 }
 
-// ── Crea y configura el objeto SpeechRecognition ─────────────────────────────
-export function createRecognition() {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) return null;
-  const r = new SR();
-  r.lang              = "es-AR";   // español rioplatense
-  r.continuous        = false;     // para en silencio automáticamente
-  r.interimResults    = true;      // resultados mientras habla
-  r.maxAlternatives   = 1;
-  return r;
+// ── Espera a que las voces estén cargadas (Chrome las carga async) ────────────
+export function waitForVoices(timeout = 2000) {
+  return new Promise(resolve => {
+    if (window.speechSynthesis.getVoices().length > 0) { resolve(); return; }
+    const onChanged = () => { window.speechSynthesis.removeEventListener("voiceschanged", onChanged); resolve(); };
+    window.speechSynthesis.addEventListener("voiceschanged", onChanged);
+    setTimeout(resolve, timeout); // fallback
+  });
 }
 
-// ── Síntesis de voz con Groq TTS ─────────────────────────────────────────────
-// Retorna el objeto Audio para poder interrumpirlo si es necesario
-export async function speakWithGroq(text, apiKey, { onStart, onEnd, onError } = {}) {
+// ── Síntesis de voz en español (SpeechSynthesis) ─────────────────────────────
+export async function speakInSpanish(text, { onStart, onEnd } = {}) {
+  if (!isSynthesisSupported()) { onEnd?.(); return null; }
+
+  const synth = window.speechSynthesis;
+  synth.cancel(); // detener cualquier audio anterior
+
+  await waitForVoices();
+
   const cleaned = cleanForTTS(text);
   if (!cleaned) { onEnd?.(); return null; }
 
-  onStart?.();
-  try {
-    const res = await fetch("https://api.groq.com/openai/v1/audio/speech", {
-      method:  "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model:           "playai-tts",
-        input:           cleaned,
-        voice:           "Fritz-PlayAI",   // voz masculina, clara y medida
-        response_format: "mp3",
-      }),
-    });
+  const utterance    = new SpeechSynthesisUtterance(cleaned);
+  utterance.lang     = "es";
+  utterance.rate     = 0.92;   // levemente más lento que default — más claro
+  utterance.pitch    = 1.0;
+  utterance.volume   = 1.0;
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      // Si TTS falla, no interrumpir el flujo del chat — solo silencio
-      console.warn("[TTS]", res.status, err?.error?.message);
-      onEnd?.();
-      return null;
-    }
-
-    const blob    = await res.blob();
-    const url     = URL.createObjectURL(blob);
-    const audio   = new Audio(url);
-
-    audio.onended = () => { URL.revokeObjectURL(url); onEnd?.(); };
-    audio.onerror = () => { URL.revokeObjectURL(url); onEnd?.(); };
-
-    await audio.play();
-    return audio;                          // retornamos para poder hacer .pause()
-
-  } catch (err) {
-    console.warn("[TTS network error]", err);
-    onEnd?.();
-    return null;
+  const voice = getBestSpanishVoice();
+  if (voice) {
+    utterance.voice = voice;
+    utterance.lang  = voice.lang; // usar el lang exacto de la voz
   }
+
+  utterance.onstart  = () => onStart?.();
+  utterance.onend    = () => onEnd?.();
+  utterance.onerror  = (e) => {
+    if (e.error !== "interrupted" && e.error !== "canceled") onEnd?.();
+  };
+
+  synth.speak(utterance);
+  return synth; // retornamos para poder llamar synth.cancel()
+}
+
+// ── Detiene la síntesis ───────────────────────────────────────────────────────
+export function stopSpeaking() {
+  if (isSynthesisSupported()) window.speechSynthesis.cancel();
+}
+
+// ── Crea el reconocedor de voz ────────────────────────────────────────────────
+export function createRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) return null;
+  const r          = new SR();
+  r.lang           = "es-AR";
+  r.continuous     = false;
+  r.interimResults = true;
+  r.maxAlternatives = 1;
+  return r;
 }
