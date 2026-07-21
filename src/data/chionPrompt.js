@@ -25,7 +25,7 @@ export const GENERATION_CONFIG = {
 export const COMISIONES = [
   "Comisión 1 — Lunes",
   "Comisión 2 — Miércoles",
-  "Comisión 3 — Viernes",
+  "Comisión 3 — Jueves",
 ];
 
 // ─── Panel Docente — Google Sheets ──────────────────────────────────────────
@@ -34,7 +34,7 @@ export const COMISIONES = [
 // 2. Publicá el script como web app (ver instrucciones en apps-script.js)
 // 3. Pegá la URL del web app en SHEETS_ENDPOINT
 // Dejalo vacío ("") para desactivar el registro remoto.
-export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz6h6HP0RoL7NC_kzLbBVLEnzvLyZAhcUex4bpgJiahp-W4chrOmcZKSMhGe56vP9hi/exec"; // ← pegar URL del Apps Script acá
+export const SHEETS_ENDPOINT = ""; // ← pegar URL del Apps Script acá
 
 // ─── Modos de interacción ────────────────────────────────────────────────────
 export const MODES = [
