@@ -20,13 +20,21 @@ export const GENERATION_CONFIG = {
   stream: true,
 };
 
+// ─── Comisiones ──────────────────────────────────────────────────────────────
+// Modificar estos nombres según cada cuatrimestre
+export const COMISIONES = [
+  "Comisión 1 — Lunes",
+  "Comisión 2 — Miércoles",
+  "Comisión 3 — Viernes",
+];
+
 // ─── Panel Docente — Google Sheets ──────────────────────────────────────────
 // Para activar el registro docente remoto:
 // 1. Creá una Google Sheet y ejecutá el Apps Script del archivo apps-script.js
 // 2. Publicá el script como web app (ver instrucciones en apps-script.js)
 // 3. Pegá la URL del web app en SHEETS_ENDPOINT
 // Dejalo vacío ("") para desactivar el registro remoto.
-export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzxQkfkvB4segVe41rwZQspRwJ9Lse0lHEc7QzTPXjtKPKWNrQjpbesDtWdwcFMRPuwDQ/exec"; // ← pegar URL del Apps Script acá
+export const SHEETS_ENDPOINT = ""; // ← pegar URL del Apps Script acá
 
 // ─── Modos de interacción ────────────────────────────────────────────────────
 export const MODES = [

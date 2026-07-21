@@ -1,15 +1,22 @@
 import { useState } from "react";
-import { loadApiKey } from "./utils/storage";
-import ApiKeySetup from "./components/ApiKeySetup";
+import { loadApiKey, loadStudent } from "./utils/storage";
+import StudentLogin from "./components/StudentLogin";
+import ApiKeySetup  from "./components/ApiKeySetup";
 import ChatInterface from "./components/ChatInterface";
 
 /**
- * App comprueba si ya hay una API key guardada en localStorage.
- * - Si hay key → va directo al chat
- * - Si no hay  → muestra la pantalla de onboarding (ApiKeySetup)
+ * Flujo de acceso:
+ * 1. ¿Hay datos de alumno verificados? → si no → StudentLogin
+ * 2. ¿Hay API key de Groq?             → si no → ApiKeySetup
+ * 3. Todo OK                           → ChatInterface
  */
 export default function App() {
-  const [apiKey, setApiKey] = useState(() => loadApiKey());
+  const [student, setStudent] = useState(() => loadStudent());
+  const [apiKey,  setApiKey]  = useState(() => loadApiKey());
+
+  if (!student) {
+    return <StudentLogin onReady={setStudent} />;
+  }
 
   if (!apiKey) {
     return <ApiKeySetup onReady={setApiKey} />;
@@ -18,7 +25,9 @@ export default function App() {
   return (
     <ChatInterface
       apiKey={apiKey}
+      student={student}
       onLogout={() => setApiKey("")}
+      onLogoutStudent={() => { setStudent(null); setApiKey(""); }}
     />
   );
 }

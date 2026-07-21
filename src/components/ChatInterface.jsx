@@ -73,7 +73,7 @@ async function callGroq(apiKey, messages) {
 }
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export default function ChatInterface({ apiKey, onLogout }) {
+export default function ChatInterface({ apiKey, student, onLogout, onLogoutStudent }) {
   const isMobile = useIsMobile();
   const DEFAULT_MODE = MODES[0];
 
@@ -313,6 +313,14 @@ export default function ChatInterface({ apiKey, onLogout }) {
             background:"transparent",borderRadius:T.radiusMd,
             color:T.textMuted,fontSize:14,cursor:"pointer",minWidth:34,
           }}>🔑</button>
+          {onLogoutStudent && (
+            <button onClick={() => { if(confirm("¿Cerrar tu sesión? Tendrás que ingresar tu DNI y PIN de nuevo.")) onLogoutStudent(); }}
+            title="Cerrar sesión" style={{
+              padding:"0 8px",height:34,border:`1px solid ${T.borderSub}`,
+              background:"transparent",borderRadius:T.radiusMd,
+              color:T.textMuted,fontSize:13,cursor:"pointer",minWidth:34,
+            }}>⏻</button>
+          )}
         </div>
       </header>
 
