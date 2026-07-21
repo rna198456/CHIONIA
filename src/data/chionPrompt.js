@@ -34,7 +34,7 @@ export const COMISIONES = [
 // 2. Publicá el script como web app (ver instrucciones en apps-script.js)
 // 3. Pegá la URL del web app en SHEETS_ENDPOINT
 // Dejalo vacío ("") para desactivar el registro remoto.
-export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbz6d-8zzSMhm2EFitHa7is3Vsg9KRK34qKycnLjQTM1zuu0EQycFqlHblFlQjcbW7VpbA/exec"; // ← pegar URL del Apps Script acá
+export const SHEETS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzxBSvIsljhcvMDKfJlMpe7DQm6iwsMPEsh-SgdcV6GWHcik-0kHhVsgTugCzFfYHmUfA/exec"; // ← pegar URL del Apps Script acá
 
 // ─── Modos de interacción ────────────────────────────────────────────────────
 export const MODES = [
