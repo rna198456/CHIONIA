@@ -150,7 +150,7 @@ export default function ChatInterface({ apiKey, student, onLogout, onLogoutStude
       if (model!==activeModel) setActiveModel(model);
       if (!abortRef.current) {
         setMessages(p=>{const n=[...p];n[n.length-1]={role:"assistant",content:reply};return n;});
-        logInteraction(txt,reply); sendToRemoteLog(txt,reply,model);
+        logInteraction(txt,reply); sendToRemoteLog(txt,reply,model,student);
         speak(reply);
       }
     } catch(err) {
