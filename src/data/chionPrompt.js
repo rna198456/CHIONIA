@@ -5,11 +5,7 @@
 //   llama-3.1-70b-versatile  → fallback
 //   mixtral-8x7b-32768       → alternativa
 
-export const GROQ_MODELS = [
-  "llama-3.3-70b-versatile",
-  "llama-3.1-70b-versatile",
-  "mixtral-8x7b-32768",
-];
+export const GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
 
 export const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
