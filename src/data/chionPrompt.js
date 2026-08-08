@@ -5,7 +5,11 @@
 //   llama-3.1-70b-versatile  → fallback
 //   mixtral-8x7b-32768       → alternativa
 
-export const GROQ_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"];
+export const GROQ_MODELS = [
+    "openai/gpt-oss-120b", // Principal: el más capaz, reemplazo ideal del 70B.
+    "qwen/qwen3.6-27b",    // Fallback 1: robusto y alternativa directa recomendada.
+    "openai/gpt-oss-20b"   // Fallback 2: liviano y rápido, tu última red de seguridad (reemplazo del 8B).
+];
 
 export const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
